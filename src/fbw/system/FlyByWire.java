@@ -21,10 +21,10 @@ public class FlyByWire {
     private double wind = 5;           // vento constante
 
     public FlyByWire() {
-        state = new FlightData(40000, 4000, 0, 0, 0);
-        posicao = new Vector3f(0, 2000f, 0); // posição inicial
-        direcao = new Vector3f(0, 0, 1);    // olhando para frente
-        
+        // Agora tem um zero a mais no final (o Yaw)
+        state = new FlightData(10000, 1000, 0, 0, 0, 0); 
+        posicao = new Vector3f(0, 2000f, 0); 
+        direcao = new Vector3f(0, 0, -1);
         this.throttle = state.speed;
     }
 
@@ -99,23 +99,20 @@ public class FlyByWire {
 	    if (state.roll > 60) state.roll = 60;
 	    if (state.roll < -60) state.roll = -60;
 
-	    // Atualiza Mach baseado na velocidade do som
-	    double speedOfSound = 295; // m/s
-	    state.mach = state.speed / speedOfSound;
 
-	    // Simula vento lateral afetando roll
-	    state.roll += wind * 0.01 * dt;
-	    
-	 // Movimento no espaço 3D
-	    float dx = (float) (Math.cos(Math.toRadians(state.pitch)) * Math.sin(Math.toRadians(state.roll)));
-	    float dy = (float) Math.sin(Math.toRadians(state.pitch));
-	    float dz = (float) (Math.cos(Math.toRadians(state.pitch)) * Math.cos(Math.toRadians(state.roll)));
+        double turnRate = state.roll * 0.1; 
+        state.yaw -= turnRate * dt;
 
-	    direcao.set(dx, dy, dz).normalize();
+        // --- VETOR DE DIREÇÃO CORRETO (Usando Pitch e Yaw) ---
+        float dx = (float) (Math.cos(Math.toRadians(state.pitch)) * Math.sin(Math.toRadians(state.yaw)));
+        float dy = (float) Math.sin(Math.toRadians(state.pitch));
+        // O OpenGL considera a "frente" como negativo no eixo Z, por isso o sinal de menos
+        float dz = (float) (-Math.cos(Math.toRadians(state.pitch)) * Math.cos(Math.toRadians(state.yaw)));
 
-	    // Move o avião pela direção
-	    Vector3f movimento = new Vector3f(direcao).mul((float) (state.speed * dt));
-	    posicao.add(movimento);
+        direcao.set(dx, dy, dz).normalize();
+
+        Vector3f movimento = new Vector3f(direcao).mul((float) (state.speed * dt));
+        posicao.add(movimento);
 	}
 
 
@@ -136,24 +133,23 @@ public class FlyByWire {
         public double pitch;
         public double roll;
         public double mach;
+        public double yaw; // NOVO: Direção do nariz (bússola)
 
-        public FlightData(double alt, double spd, double pt, double rl, double mc) {
-            altitude = alt;
-            speed = spd;
-            pitch = pt;
-            roll = rl;
-            mach = mc;
+        public FlightData(double alt, double spd, double pt, double rl, double mc, double yw) {
+            altitude = alt; speed = spd; pitch = pt; roll = rl; mach = mc; yaw = yw;
         }
 
         public FlightData copy() {
-            return new FlightData(altitude, speed, pitch, roll, mach);
+            return new FlightData(altitude, speed, pitch, roll, mach, yaw);
         }
 
+        // Getters
         public double getAltitude() { return altitude; }
         public double getSpeed() { return speed; }
         public double getPitch() { return pitch; }
         public double getRoll() { return roll; }
         public double getMach() { return mach; }
+        public double getYaw() { return yaw; } // NOVO
     }
 
 	public double getThrottle() {
