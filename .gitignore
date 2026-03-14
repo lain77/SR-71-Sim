@@ -1,0 +1,47 @@
+# --- Artefatos de Compilação (Java) ---
+*.class
+bin/
+build/
+target/
+dist/
+
+# --- Arquivos específicos do Eclipse ---
+.metadata/
+.settings/
+.loadpath
+.recommenders/
+.project
+.classpath
+*.launch
+
+# --- Arquivos do Sistema / SO ---
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# --- LWJGL e Dependências ---
+# Ignorar arquivos nativos extraídos (DLLs, .so, .dylib) se estiverem na raiz ou pasta lib
+*.dll
+*.so
+*.dylib
+*.jnilib
+
+# Ignorar logs de erro fatais da JVM (comuns em desenvolvimento de jogos/gráficos)
+hs_err_pid*
+
+# --- Gerenciadores de Dependência (Se você estiver usando algum) ---
+# Maven
+pom.xml.tag
+pom.xml.releaseBackup
+pom.xml.versionsBackup
+pom.xml.next
+release.properties
+dependency-reduced-pom.xml
+buildNumber.properties
+.mvn/ timing.properties
+
+# Gradle
+.gradle/
+gradle-app.setting
+!gradle-wrapper.jar
+.gradletasknamecache
