@@ -64,6 +64,11 @@ public class Camera {
                 break;
         }
     }
+    
+    public void setIntroCam(Vector3f camPos, Vector3f lookAt) {
+        this.position.set(camPos);
+        this.target.set(lookAt);
+    }
 
     public void updateAspect(int width, int height) { this.aspect = (float) width / height; }
     
