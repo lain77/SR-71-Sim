@@ -41,7 +41,7 @@ Como o projeto está em progresso, certifique-se de ter o **JDK 22** (Preciso at
 
 1. Clone o repositório:
    ```bash
-   git clone [https://github.com/seu-usuario/seu-repositorio.git](https://github.com/seu-usuario/seu-repositorio.git)
+   git clone [https://github.com/seu-usuario/seu-repositorio.git](https://github.com/seu-usuario/seu-repositorio.git)](https://github.com/lain77/SR-71-Sim.git)
    ```
 2. Importe o projeto
    
