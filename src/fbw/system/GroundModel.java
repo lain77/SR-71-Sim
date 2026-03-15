@@ -16,7 +16,6 @@ public class GroundModel {
     private final List<Integer> vboIds = new ArrayList<>();
     private final int indexCount;
 
-    // Aumentado para 256: vértice a cada ~1.5km (era 4km)
     private static final int VERTEX_COUNT = 256;
 
     public GroundModel(float size, float uvRepeat) {
@@ -37,7 +36,6 @@ public class GroundModel {
                 positions[vertexPointer * 3 + 1] = y;
                 positions[vertexPointer * 3 + 2] = z;
 
-                // Offset proporcional ao espaçamento real entre vértices
                 Vector3f normal = calculateNormal(x, z, size / (VERTEX_COUNT - 1));
                 normals[vertexPointer * 3]     = normal.x;
                 normals[vertexPointer * 3 + 1] = normal.y;
@@ -46,11 +44,6 @@ public class GroundModel {
                 uvs[vertexPointer * 2]     = ((float) j / (VERTEX_COUNT - 1)) * uvRepeat;
                 uvs[vertexPointer * 2 + 1] = ((float) i / (VERTEX_COUNT - 1)) * uvRepeat;
 
-                // Altura normalizada (0..1) como segundo UV — usada no shader para blending
-                float heightNorm = (y + 800f) / 2400f; // range aproximado do terreno
-                // Guardamos como atributo extra no UV.y alternativo via segundo canal
-                // (veja comentário no shader — usaremos FragPos.y diretamente, mais simples)
-
                 vertexPointer++;
             }
         }
@@ -58,9 +51,9 @@ public class GroundModel {
         int pointer = 0;
         for (int gz = 0; gz < VERTEX_COUNT - 1; gz++) {
             for (int gx = 0; gx < VERTEX_COUNT - 1; gx++) {
-                int topLeft    = (gz * VERTEX_COUNT) + gx;
-                int topRight   = topLeft + 1;
-                int bottomLeft = ((gz + 1) * VERTEX_COUNT) + gx;
+                int topLeft     = (gz * VERTEX_COUNT) + gx;
+                int topRight    = topLeft + 1;
+                int bottomLeft  = ((gz + 1) * VERTEX_COUNT) + gx;
                 int bottomRight = bottomLeft + 1;
                 indices[pointer++] = topLeft;
                 indices[pointer++] = bottomLeft;
@@ -90,41 +83,143 @@ public class GroundModel {
         glBindVertexArray(0);
     }
 
-    // 4 oitavas de ruído: montanhas grandes + cordilheira + colinas + detalhes
+    // ── RUÍDO BASE (substitui Math.random — determinístico e suave) ──
+    private static float hash(float x, float z) {
+        // Hash sem tabela — combinação de senos com números irracionais
+        double val = Math.sin(x * 127.1 + z * 311.7) * 43758.5453;
+        return (float)(val - Math.floor(val));
+    }
+
+    // Interpolação suave (smoothstep cúbico)
+    private static float fade(float t) {
+        return t * t * (3f - 2f * t);
+    }
+
+    // Ruído de valor 2D suave
+    private static float valueNoise(float x, float z) {
+        float ix = (float) Math.floor(x);
+        float iz = (float) Math.floor(z);
+        float fx = x - ix;
+        float fz = z - iz;
+
+        float ux = fade(fx);
+        float uz = fade(fz);
+
+        float a = hash(ix,     iz);
+        float b = hash(ix + 1, iz);
+        float c = hash(ix,     iz + 1);
+        float d = hash(ix + 1, iz + 1);
+
+        return a + (b - a) * ux
+             + (c - a) * uz
+             + (a - b - c + d) * ux * uz;
+    }
+
+    // fBm — Fractal Brownian Motion com N oitavas
+    private static float fbm(float x, float z, int octaves,
+                              float frequency, float lacunarity, float gain) {
+        float value     = 0f;
+        float amplitude = 1f;
+        float freq      = frequency;
+        float maxVal    = 0f;
+
+        for (int i = 0; i < octaves; i++) {
+            value   += valueNoise(x * freq, z * freq) * amplitude;
+            maxVal  += amplitude;
+            amplitude *= gain;
+            freq      *= lacunarity;
+        }
+        return value / maxVal; // normaliza 0..1
+    }
+
+    // Ridge noise — cria picos pontiagudos tipo Cáucaso
+    private static float ridgeFbm(float x, float z, int octaves,
+                                   float frequency, float lacunarity, float gain) {
+        float value     = 0f;
+        float amplitude = 1f;
+        float freq      = frequency;
+        float maxVal    = 0f;
+        float prev      = 1f;
+
+        for (int i = 0; i < octaves; i++) {
+            float n = valueNoise(x * freq, z * freq);
+            n = 1f - Math.abs(n * 2f - 1f); // inverte vales em picos
+            n = n * n;                        // aguça os picos
+            value   += n * amplitude * prev;
+            prev     = n;
+            maxVal  += amplitude;
+            amplitude *= gain;
+            freq      *= lacunarity;
+        }
+        return value / maxVal;
+    }
+
+    // ── GERADOR PRINCIPAL ─────────────────────────────────────────────
     public static float generateHeight(float x, float z) {
-        // Oitava 1 — grandes cadeias (escala aumentada 1800 → 3200)
-        float mountains = (float)(
-            Math.sin(x * 0.00008 + 1.3) * Math.cos(z * 0.00009 - 0.7) * 0.7 +
-            Math.cos(x * 0.00007 - 0.5) * Math.sin(z * 0.00006 + 1.1) * 0.3
-        ) * 3200f;
+        float nx = x * 0.000045f;
+        float nz = z * 0.000045f;
 
-        // Oitava 2 — cordilheiras (800 → 1200)
-        float ridges = (float)(
-            Math.abs(Math.sin(x * 0.0003 + 0.8) * Math.cos(z * 0.0002 - 1.2))
-        ) * 1200f;
+        float regionMask = fbm(nx * 0.25f, nz * 0.25f, 3, 1.0f, 2.0f, 0.5f);
 
-        // Oitava 3 — colinas
-        float hills = (float)(
-            Math.sin(x * 0.001 + 2.1) * Math.cos(z * 0.0012 - 0.4) * 0.5 +
-            Math.cos(x * 0.0009 - 1.7) * Math.sin(z * 0.0011 + 0.9) * 0.5
-        ) * 300f;
+        float ridgeAngle = (x * 0.6f + z * 1.0f) * 0.000025f;
+        float ridgeMask  = (float) Math.exp(-ridgeAngle * ridgeAngle * 0.5f);
+        float ridge      = ridgeFbm(nx, nz, 6, 1.0f, 2.1f, 0.5f);
 
-        // Oitava 4 — micro-detalhes
-        float detail = (float)(
-            Math.sin(x * 0.004 - 0.3) * Math.cos(z * 0.005 + 1.8)
-        ) * 60f;
+        float plains = fbm(nx, nz, 4, 1.0f, 2.0f, 0.5f);
+        float detail = fbm(nx * 8f, nz * 8f, 3, 1.0f, 2.0f, 0.45f) * 0.08f;
 
-        float combined = mountains + ridges + hills + detail;
+        float mountainBlend = smoothstep(0.35f, 0.65f, regionMask);
+        float plainHeight   = (plains - 0.4f) * 600f;
 
-        // Planície: tudo abaixo de -400 achata mais
-        if (combined < -400f) {
-            combined = -400f + (combined + 400f) * 0.1f;
+        // 3x mais alto que antes
+        float mountainHeight = ridge * (8400f + regionMask * 3600f);
+        mountainHeight *= (0.4f + ridgeMask * 0.6f);
+
+        float combined = mix(plainHeight, mountainHeight, mountainBlend);
+        combined += detail * 200f;
+
+        // Rios: vales estreitos onde o fBm tem valor baixo específico
+        float riverNoise = fbm(nx * 2f, nz * 2f, 2, 1.0f, 2.0f, 0.5f);
+        float riverMask  = smoothstep(0.48f, 0.50f, riverNoise)
+                         * smoothstep(0.52f, 0.50f, riverNoise); // faixa estreita
+        riverMask *= (1f - mountainBlend); // só em planícies
+        combined  -= riverMask * 400f; // escava o vale do rio
+
+        // Lagos: depressões em áreas planas com mask baixo
+        float lakeMask = smoothstep(0.30f, 0.25f, regionMask)
+                       * smoothstep(0.3f, 0.0f, fbm(nx * 3f, nz * 3f, 2, 1.0f, 2.0f, 0.5f));
+        combined -= lakeMask * 200f;
+
+        float edgeDist = edgeDistance(x, z, 200000f);
+        if (edgeDist < 1.0f) {
+            combined = mix(-80f, combined, edgeDist * edgeDist);
+        }
+
+        if (combined < -60f) {
+            combined = -60f + (combined + 60f) * 0.15f;
         }
 
         return combined;
     }
 
-    // Offset proporcional ao espaçamento real — normais precisas
+    // Utilitários
+    private static float smoothstep(float edge0, float edge1, float x) {
+        float t = Math.max(0f, Math.min(1f, (x - edge0) / (edge1 - edge0)));
+        return t * t * (3f - 2f * t);
+    }
+
+    private static float mix(float a, float b, float t) {
+        return a + (b - a) * t;
+    }
+
+    // Distância normalizada até a borda do mapa (0=borda, 1=centro)
+    private static float edgeDistance(float x, float z, float halfSize) {
+        float dx = Math.max(0f, Math.abs(x) - halfSize * 0.85f);
+        float dz = Math.max(0f, Math.abs(z) - halfSize * 0.85f);
+        float d  = (float) Math.sqrt(dx * dx + dz * dz);
+        return Math.max(0f, 1f - d / (halfSize * 0.15f));
+    }
+
     private Vector3f calculateNormal(float x, float z, float offset) {
         float heightL = generateHeight(x - offset, z);
         float heightR = generateHeight(x + offset, z);

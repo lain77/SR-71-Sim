@@ -40,6 +40,18 @@ public class FlyData {
     private SunBillboard sunBillboard;
     private ShaderProgram sunShader;
     private CloudSystem cloudSystem;
+    
+    private Framebuffer    sceneBuffer;
+    private Framebuffer    brightBuffer;
+    private Framebuffer    blurBufferH;
+    private Framebuffer    blurBufferV;
+    private PostProcessQuad postQuad;
+    private ShaderProgram   bloomBrightShader;
+    private ShaderProgram   bloomBlurShader;
+    private ShaderProgram   finalPostShader;
+    private ShaderProgram   heatHazeShader;
+    private float           postTime = 0f;
+    
     private Camera camera;
     private List<Model> models = new ArrayList<>(); 
 
@@ -116,6 +128,8 @@ public class FlyData {
     
     private int rockTextureId;
     private int snowTextureId;
+    
+    private TreeSystem treeSystem;
 
     public void run() {
         init();
@@ -183,7 +197,7 @@ public class FlyData {
         fbw.stop();
         fbw.revive();
         fbw.setPosicao(new Vector3f(5000f, 2000f, 5000f));
-        fbw.setThrottle(50);
+        fbw.setThrottle(200);
         gameplayStarted = false;
     }
     
@@ -198,6 +212,25 @@ public class FlyData {
             sunShader    = new ShaderProgram(sunVert, sunFrag);
             sunBillboard = new SunBillboard();
             cloudSystem = new CloudSystem();
+            treeSystem = new TreeSystem();
+            
+         // Framebuffers
+            sceneBuffer  = new Framebuffer(1280, 720);
+            brightBuffer = new Framebuffer(1280, 720);
+            blurBufferH  = new Framebuffer(1280, 720);
+            blurBufferV  = new Framebuffer(1280, 720);
+            postQuad     = new PostProcessQuad();
+
+            // Shaders de post
+            String postVert = FileUtils.loadFileAsString("src/res/shaders/post_vertex.glsl");
+            bloomBrightShader = new ShaderProgram(postVert,
+                FileUtils.loadFileAsString("src/res/shaders/bloom_bright.glsl"));
+            bloomBlurShader   = new ShaderProgram(postVert,
+                FileUtils.loadFileAsString("src/res/shaders/bloom_blur.glsl"));
+            finalPostShader   = new ShaderProgram(postVert,
+                FileUtils.loadFileAsString("src/res/shaders/final_post.glsl"));
+            heatHazeShader    = new ShaderProgram(postVert,
+                FileUtils.loadFileAsString("src/res/shaders/heat_haze.glsl"));
 
             camera = new Camera();
             camera.updateAspect(1280, 720);
@@ -241,11 +274,6 @@ public class FlyData {
                     if (currentScreen == Screen.DEBRIEFING) {
                         stopGameplay();
                         currentScreen = Screen.MISSION_SELECT;
-                    }
-                    if (currentScreen == Screen.GAME_OVER) {
-                        stopGameplay();
-                        fbw.revive();
-                        currentScreen = Screen.DEBRIEFING;
                     }
                 }
             }
@@ -390,13 +418,6 @@ public class FlyData {
             float delta = (now - lastFrameTime) / 1000f;
             boolean emVoo = currentScreen == Screen.EXTERNAL 
                     || currentScreen == Screen.DATA;
-            
-            if (currentScreen == Screen.EXTERNAL || currentScreen == Screen.DATA) {
-                stats.sample(fbw.getLastData());
-            }
-
-            // Checagem de colisão com o terreno
-            checkTerrainCollision();
 
             // Checa morte
             if (emVoo && !paused) {
@@ -617,8 +638,20 @@ public class FlyData {
             shader.setUniform3f("viewPos",     camera.getPosition().x,
                                                camera.getPosition().y,
                                                camera.getPosition().z);
+            // Uniforms obrigatórios do novo fragment shader
+            shader.setUniform1i("useTexture",  0);
+            shader.setUniform1i("useTerrain",  0);
+            shader.setUniform3f("lightDir",   -0.5f, -1.0f, -0.3f);
+            shader.setUniform3f("skyColor",    0.04f, 0.04f, 0.06f);
+            shader.setUniform3f("rimColor",    0.3f, 0.5f, 1.0f);
+            shader.setUniformFloat("rimStrength",      0.5f);
+            shader.setUniformFloat("fogDensity",       0.0f);
+            shader.setUniform3f("emissiveColor",       0f, 0f, 0f);
+            shader.setUniformFloat("emissiveStrength", 0f);
+            shader.setUniform3f("sunDir",      0.4f, 0.8f, 0.3f);
+
             for (Model m : models) m.render();
-            shader.unbind();
+            shader.unbind(); // ESSENCIAL — sem isso quebra o 2D legado
         }
 
         // ── 2. HUD 2D ─────────────────────────────────────────────────
@@ -929,10 +962,16 @@ public class FlyData {
     private void renderExternal() {
         FlyByWire.FlightData data = fbw.getLastData();
         if (data == null) return;
+        renderWithPostProcess(0.016f);
+    }
+    
+    private void renderExternalScene() {
+        FlyByWire.FlightData data = fbw.getLastData();
 
-        glClearColor(0.53f, 0.81f, 0.92f, 1f);
+        glClearColor(0.15f, 0.45f, 0.85f, 1f); 
         glEnable(GL_DEPTH_TEST);
-        
+
+        float lx = 0.5f, ly = 0.7f, lz = 0.2f;
         Vector3f posReal = fbw.getPosicao();
 
         Vector3f planePos = new Vector3f(posReal.x, (float)data.getAltitude() / 10f, posReal.z);
@@ -945,12 +984,12 @@ public class FlyData {
 
         // MOVE viewPos PARA CÁ — antes de qualquer coisa
         shader.setUniform3f("viewPos", camera.getPosition().x, camera.getPosition().y, camera.getPosition().z);
-        shader.setUniform3f("lightDir",   -0.5f, -1.0f, -0.3f);
-        shader.setUniform3f("lightColor",  1.0f,  0.95f, 0.8f);
-        shader.setUniform3f("skyColor",    0.53f, 0.81f, 0.92f);
-        shader.setUniform3f("rimColor",    0.3f,  0.5f,  1.0f);
-        shader.setUniformFloat("rimStrength", 0.5f);
-        shader.setUniformFloat("fogDensity",  0.000035f);
+        shader.setUniform3f("lightDir", -lx, -ly, -lz); // mais horizontal
+        shader.setUniform3f("lightColor",  2.0f,  1.8f,  1.4f); // mais forte para compensar ambient baixo
+        shader.setUniform3f("skyColor", 0.15f, 0.45f, 0.85f);
+        shader.setUniform3f("rimColor",    0.5f,  0.7f,  1.0f);
+        shader.setUniformFloat("rimStrength", 1.2f);
+        shader.setUniformFloat("fogDensity", 0.000000000012f);
 
         // Chão
         shader.setUniform1i("useTexture", 1);
@@ -978,7 +1017,7 @@ public class FlyData {
 
         // --- 2. DESENHAR O AVIÃO (SR-71) ---
         shader.setUniform1i("useTexture", 0);
-        shader.setUniform3f("objectColor", 0.15f, 0.15f, 0.15f);
+        shader.setUniform3f("objectColor", 0.3f, 0.3f, 0.32f);
         shader.setUniform3f("lightPos", planePos.x, planePos.y + 500f, planePos.z); 
         shader.setUniform3f("lightColor", 1.0f, 1.0f, 1.0f);
 
@@ -1005,12 +1044,38 @@ public class FlyData {
         
         renderSun();
         renderClouds();
-
-        renderHUD();
         
-        // Desenha avisos críticos por cima do 3D
-        renderHUD(); 
+        FlyByWire.FlightData data2 = fbw.getLastData();
+        if (data2 != null) {
+            // Shader já está unbound aqui — rebinda para as árvores
+            shader.bind();
+            shader.setUniformMatrix4f("projection", camera.getProjectionMatrix());
+            shader.setUniformMatrix4f("view",       camera.getViewMatrix());
+            shader.setUniform1i("useTexture",  0);
+            shader.setUniform1i("useTerrain",  0);
+            shader.setUniform3f("lightDir",   -0.5f, -0.7f, -0.2f);
+            shader.setUniform3f("lightColor",  2.0f,  1.8f,  1.4f);
+            shader.setUniform3f("viewPos",     camera.getPosition().x,
+                                               camera.getPosition().y,
+                                               camera.getPosition().z);
+            shader.setUniform3f("rimColor",    0.3f, 0.6f, 0.2f);
+            shader.setUniformFloat("rimStrength",      0.3f);
+            shader.setUniformFloat("fogDensity",       0.000000000012f);
+            shader.setUniform3f("emissiveColor",       0f, 0f, 0f);
+            shader.setUniformFloat("emissiveStrength", 0f);
+            shader.setUniform3f("sunDir",      0.5f, 0.7f, 0.2f);
+            shader.setUniform3f("skyColor",    0.15f, 0.45f, 0.85f);
+
+            treeSystem.render(camera, shader);
+            shader.unbind();
+        }
+
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        glEnable(GL_DEPTH_TEST);
     }
+    
     private void renderMapScreen() {
         setup2DLegado();
         glClearColor(0f, 0f, 0f, 1f);
@@ -1182,6 +1247,16 @@ public class FlyData {
         if (sunShader    != null) sunShader.cleanup();
         if (sunBillboard != null) sunBillboard.cleanup();
         if (cloudSystem != null) cloudSystem.cleanup();
+        if (sceneBuffer  != null) sceneBuffer.cleanup();
+        if (brightBuffer != null) brightBuffer.cleanup();
+        if (blurBufferH  != null) blurBufferH.cleanup();
+        if (blurBufferV  != null) blurBufferV.cleanup();
+        if (postQuad     != null) postQuad.cleanup();
+        if (bloomBrightShader != null) bloomBrightShader.cleanup();
+        if (bloomBlurShader   != null) bloomBlurShader.cleanup();
+        if (finalPostShader   != null) finalPostShader.cleanup();
+        if (heatHazeShader    != null) heatHazeShader.cleanup();
+        if (treeSystem != null) treeSystem.cleanup();
         glfwDestroyWindow(window);
         glfwTerminate();
     }
@@ -1256,9 +1331,7 @@ public class FlyData {
     private void renderSun() {
         // Direção do sol (mesma do lightDir, invertida)
         org.joml.Vector3f lightDirVec = new org.joml.Vector3f(-0.5f, -1.0f, -0.3f).normalize();
-        org.joml.Vector3f sunDirection = lightDirVec.negate(new org.joml.Vector3f()); // aponta DA cena PARA o sol
-
-        // Posiciona o disco bem longe na direção do sol
+        org.joml.Vector3f sunDirection = new org.joml.Vector3f(0.5f, 0.7f, 0.2f).normalize();
         org.joml.Vector3f camPos = camera.getPosition();
         org.joml.Vector3f sunPos = new org.joml.Vector3f(camPos).add(
             new org.joml.Vector3f(sunDirection).mul(90000f)
@@ -1280,7 +1353,7 @@ public class FlyData {
         sunShader.setUniform3f("center",   sunPos.x,   sunPos.y,   sunPos.z);
         sunShader.setUniform3f("camRight", camRight.x, camRight.y, camRight.z);
         sunShader.setUniform3f("camUp",    camUp.x,    camUp.y,    camUp.z);
-        sunShader.setUniformFloat("size",  4000f); // tamanho do disco
+        sunShader.setUniformFloat("size",  8000f); // tamanho do disco
 
         sunBillboard.render();
         sunShader.unbind();
@@ -1319,6 +1392,10 @@ public class FlyData {
     }
     
     private void renderLogo(float delta) {
+    	if (!introMusicStarted) {
+    	audio.playSound("/audio/introjoi.wav"); // exporta o áudio da edit como WAV
+        introMusicStarted = true;
+}
         logoTimer += delta;
         setup2DLegado();
 
@@ -1355,10 +1432,10 @@ public class FlyData {
     }
     
     private void renderIntro(float delta) {
-        if (!introMusicStarted) {
-            audio.playSound("/audio/intro_music.wav"); // exporta o áudio da edit como WAV
-            introMusicStarted = true;
-        }
+//        if (!introMusicStarted) {
+//            audio.playSound("/audio/audioox.wav"); // exporta o áudio da edit como WAV
+//            introMusicStarted = true;
+//        }
         
         introTimer += delta;
         introCamAngle += delta * 18f; // câmera orbita lentamente
@@ -1413,6 +1490,9 @@ public class FlyData {
         shader.setUniformFloat("fogDensity",  0.0f);
         shader.setUniform3f("emissiveColor", 0f, 0f, 0f);
         shader.setUniformFloat("emissiveStrength", 0f);
+        
+        shader.setUniform3f("sunDir", 0.4f, 0.8f, 0.3f);
+        
         for (Model m : models) m.render();
         shader.unbind();
 
@@ -1471,6 +1551,8 @@ public class FlyData {
         shader.setUniformFloat("fogDensity",      0.0f);
         shader.setUniform3f("emissiveColor",      0f, 0f, 0f);
         shader.setUniformFloat("emissiveStrength", 0f);
+        shader.setUniform3f("sunDir", 0.4f, 0.8f, 0.3f);
+        
         for (Model m : models) m.render();
         shader.unbind();
 
@@ -1550,7 +1632,7 @@ public class FlyData {
         textRenderer.renderText("MISSAO:", lx, y);
         glColor3f(0f, 1f, 0f);
         textRenderer.renderText(stats.getMissionName() != null ? stats.getMissionName() : "—", rx, y);
-        
+        y += step;
         glColor3f(0f, 0.5f, 0f);
         textRenderer.renderText("TEMPO DE VOO:", lx, y);
         glColor3f(0f, 1f, 0f);
@@ -1666,8 +1748,8 @@ public class FlyData {
     
     private void renderPauseMenu() {
         // Renderiza a tela atual por baixo (congelada)
-        if (currentScreen == Screen.EXTERNAL) renderExternal();
-        else renderDataScreen();
+    	if (currentScreen == Screen.EXTERNAL) renderExternalScene();
+    	else renderDataScreen();
 
         // Overlay escuro semi-transparente
         setup2DLegado();
@@ -1722,6 +1804,113 @@ public class FlyData {
         textRenderer.renderText("ESC = Continuar", bx + 70, by + bh - 18);
     }
 
+    private void renderWithPostProcess(float delta) {
+        postTime += delta;
+
+        // ── PASSO 1: Renderiza cena no FBO ──────────────────────────
+        sceneBuffer.bind();
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        renderExternalScene(); // veja abaixo
+        sceneBuffer.unbind();
+
+        // ── PASSO 2: Heat haze (distorção nas turbinas) ───────────────
+        blurBufferH.bind();
+        glClear(GL_COLOR_BUFFER_BIT);
+        glDisable(GL_DEPTH_TEST);
+
+        // Projeta posição das turbinas para UV de tela
+        FlyByWire.FlightData data = fbw.getLastData();
+        Vector3f posReal  = fbw.getPosicao();
+        Vector3f planePos = new Vector3f(posReal.x, (float)data.altitude / 10f, posReal.z);
+
+        // Offset aproximado das turbinas (atrás e abaixo do avião)
+        Vector3f turbineWorld = new Vector3f(planePos).add(0, -0.5f, 1.5f);
+        Vector3f screenUV     = worldToScreenUV(turbineWorld);
+
+        heatHazeShader.bind();
+        heatHazeShader.setUniform1i("scene", 0);
+        heatHazeShader.setUniformFloat("time", postTime);
+        heatHazeShader.setUniform2f("turbineScreenPos", screenUV.x, screenUV.y);
+        heatHazeShader.setUniformFloat("hazeStrength", 0.003f);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, sceneBuffer.getTexture());
+        postQuad.render();
+        heatHazeShader.unbind();
+        blurBufferH.unbind();
+
+        // ── PASSO 3: Extrai brilho ───────────────────────────────────
+        brightBuffer.bind();
+        glClear(GL_COLOR_BUFFER_BIT);
+        bloomBrightShader.bind();
+        bloomBrightShader.setUniform1i("scene", 0);
+        bloomBrightShader.setUniformFloat("threshold", 0.88f);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, blurBufferH.getTexture());
+        postQuad.render();
+        bloomBrightShader.unbind();
+        brightBuffer.unbind();
+
+        // ── PASSO 4: Blur horizontal ─────────────────────────────────
+        blurBufferV.bind();
+        glClear(GL_COLOR_BUFFER_BIT);
+        bloomBlurShader.bind();
+        bloomBlurShader.setUniform1i("image", 0);
+        bloomBlurShader.setUniform1i("horizontal", 1);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, brightBuffer.getTexture());
+        postQuad.render();
+        bloomBlurShader.unbind();
+        blurBufferV.unbind();
+
+        // ── PASSO 5: Blur vertical ───────────────────────────────────
+        brightBuffer.bind();
+        glClear(GL_COLOR_BUFFER_BIT);
+        bloomBlurShader.bind();
+        bloomBlurShader.setUniform1i("image", 0);
+        bloomBlurShader.setUniform1i("horizontal", 0);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, blurBufferV.getTexture());
+        postQuad.render();
+        bloomBlurShader.unbind();
+        brightBuffer.unbind();
+
+        // ── PASSO 6: Composite final ─────────────────────────────────
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        finalPostShader.bind();
+        finalPostShader.setUniform1i("scene",     0);
+        finalPostShader.setUniform1i("bloomBlur", 1);
+        finalPostShader.setUniformFloat("bloomStrength", 0.04f);
+        finalPostShader.setUniformFloat("exposure", 1.25f); 
+        finalPostShader.setUniformFloat("vignetteStr",   0.25f);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, blurBufferH.getTexture()); // cena com haze
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, brightBuffer.getTexture()); // bloom
+        postQuad.render();
+        finalPostShader.unbind();
+
+        // ── HUD por cima (sem post-processing) ───────────────────────
+        glEnable(GL_DEPTH_TEST);
+        
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, 0);
+
+        glEnable(GL_DEPTH_TEST);
+        renderHUD();
+        renderCountermeasureHUD();
+    }
+    
+    private Vector3f worldToScreenUV(Vector3f worldPos) {
+        org.joml.Vector4f clip = new org.joml.Vector4f(worldPos, 1.0f);
+        clip = camera.getProjectionMatrix().mul(camera.getViewMatrix(),
+               new org.joml.Matrix4f()).transform(clip);
+        if (clip.w == 0) return new Vector3f(0.5f, 0.5f, 0);
+        float ndcX = clip.x / clip.w;
+        float ndcY = clip.y / clip.w;
+        return new Vector3f((ndcX + 1f) / 2f, (ndcY + 1f) / 2f, 0);
+    }
     
     public static void main(String[] args) { new FlyData().run(); }
 }
