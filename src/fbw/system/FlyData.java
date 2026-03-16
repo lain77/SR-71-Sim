@@ -42,6 +42,19 @@ public class FlyData {
     private CloudSystem cloudSystem;
     private SkyRenderer skyRenderer;
 
+    private float missionBarY       = 110;
+    private float missionBarTargetY = 110;
+    
+    private int texPilots, texMD11, texTakeoff, texSR71One;
+    private int texWeaver, texGilliland, texMarta, texCrews, texPilot23;
+    
+ // Transição VHS
+    private boolean  transitioning = false;
+    private float    transTimer    = 0f;
+    private float    transDuration = 0.8f;  // duração total em segundos
+    private Screen   transTarget   = null;
+    private boolean  transHalfDone = false;
+    
     private int screenWidth = 1280;
     private int screenHeight = 720;
     
@@ -51,6 +64,11 @@ public class FlyData {
     private float   rsoTimer      = 0f;
     private String  rsoMessage    = "";
     private static final float RSO_DURATION = 4f;
+    
+ // Menu animation
+    private float menuBarY       = 385;
+    private float menuBarTargetY = 385;
+    private float menuBarAlpha   = 0f;    // fade in da barra
     
     private Framebuffer    sceneBuffer;
     private Framebuffer    brightBuffer;
@@ -62,6 +80,11 @@ public class FlyData {
     private ShaderProgram   finalPostShader;
     private ShaderProgram   heatHazeShader;
     private float           postTime = 0f;
+    
+    private float glitchTimer    = 0f;
+    private float glitchDuration = 0f;
+    private float glitchOffsetX  = 0f;
+    private boolean hudFlicker   = false;
     
     private int currentLivery = 0;
     private String[] liveryPaths = {
@@ -212,6 +235,16 @@ public class FlyData {
         
         rsoTextureId = loadTexture("src/img/brianshul.jpg");
         
+        texPilots  = loadTexture("src/img/sr71pilots.jpg");
+        texMD11    = loadTexture("src/img/md11.jpg");
+        texTakeoff = loadTexture("src/img/sr71takeoff.jpg");
+        texSR71One = loadTexture("src/img/sr71one.jpg");
+        texWeaver    = loadTexture("src/img/bill_weaver.jpg");
+        texGilliland = loadTexture("src/img/SR-71-Gilliland.jpg");
+        texMarta     = loadTexture("src/img/SR-71-Marta-Bohn-Meyer.jpg");
+        texCrews     = loadTexture("src/img/SR-71-crews.jpg");
+        texPilot23   = loadTexture("src/img/pilot23.jpg");
+        
         mapTextureId = loadTexture("src/img/EuropeMap.PNG");
         backgroundTextureId = loadBackgroundImage();
 
@@ -238,7 +271,7 @@ public class FlyData {
         fbw.stop();
         fbw.revive();
         fbw.setPosicao(new Vector3f(5000f, 6667f, 5000f));
-        fbw.setThrottle(1000);
+        fbw.setThrottle(300); 
         gameplayStarted = false;
         previousScreen = Screen.MAIN_MENU;
     }
@@ -323,8 +356,8 @@ public class FlyData {
                     else if (currentScreen == Screen.LOGO)           currentScreen = Screen.INTRO;
                     else if (currentScreen == Screen.INTRO)          { introSkipped = true; currentScreen = Screen.MAIN_MENU; }
                     else if (currentScreen == Screen.MAIN_MENU)      confirmMenuSelection();
-                    else if (currentScreen == Screen.GAME_OVER)      { fbw.revive(); currentScreen = Screen.DEBRIEFING; }
-                    else if (currentScreen == Screen.DEBRIEFING)     { stopGameplay(); currentScreen = Screen.MISSION_SELECT; }
+                    else if (currentScreen == Screen.GAME_OVER)      { fbw.revive(); transitionTo(Screen.DEBRIEFING); }
+                    else if (currentScreen == Screen.DEBRIEFING)     { stopGameplay(); transitionTo(Screen.MISSION_SELECT); }
                     else if (currentScreen == Screen.MISSION_SELECT)  selectAndStart(missionSelectedIndex);
                 }
             }
@@ -343,10 +376,14 @@ public class FlyData {
             case GLFW_KEY_UP -> {
                 if (pressed) {
                     if (paused) { pauseSelectedIndex = Math.max(0, pauseSelectedIndex - 1); break; }
-                    if (currentScreen == Screen.MAIN_MENU)
+                    if (currentScreen == Screen.MAIN_MENU) {
                         menuSelectedIndex = Math.max(0, menuSelectedIndex - 1);
-                    else if (currentScreen == Screen.MISSION_SELECT)
+                        menuBarTargetY = 385 + menuSelectedIndex * 50;
+                    	}
+                    else if (currentScreen == Screen.MISSION_SELECT) {
                         missionSelectedIndex = Math.max(0, missionSelectedIndex - 1);
+                        missionBarTargetY = 140 + missionSelectedIndex * 100;
+                    }
                     else if (currentScreen == Screen.EXTERNAL || currentScreen == Screen.DATA)
                         fbw.setPitchInput(1);
                 } else {
@@ -358,10 +395,13 @@ public class FlyData {
             case GLFW_KEY_DOWN -> {
                 if (pressed) {
                     if (paused) { pauseSelectedIndex = Math.min(2, pauseSelectedIndex + 1); break; }
-                    if (currentScreen == Screen.MAIN_MENU)
+                    if (currentScreen == Screen.MAIN_MENU) {
                         menuSelectedIndex = Math.min(4, menuSelectedIndex + 1);
-                    else if (currentScreen == Screen.MISSION_SELECT)
+                        menuBarTargetY = 385 + menuSelectedIndex * 50; }
+                    else if (currentScreen == Screen.MISSION_SELECT) {
                         missionSelectedIndex = Math.min(missionManager.getMissions().size() - 1, missionSelectedIndex + 1);
+                        missionBarTargetY = 140 + missionSelectedIndex * 100;
+                    }
                     else if (currentScreen == Screen.EXTERNAL || currentScreen == Screen.DATA)
                         fbw.setPitchInput(-1);
                 } else {
@@ -460,6 +500,9 @@ public class FlyData {
                         glViewport(0, 0, screenWidth, screenHeight);
                         camera.updateAspect(screenWidth, screenHeight);
 
+                        // Atualiza escala da fonte
+                        textRenderer.setScale(screenWidth / 1280f);
+
                         if (sceneBuffer  != null) sceneBuffer.cleanup();
                         if (brightBuffer != null) brightBuffer.cleanup();
                         if (blurBufferH  != null) blurBufferH.cleanup();
@@ -548,41 +591,56 @@ public class FlyData {
     }
 
     private void loop() {
+        lastFrameTime = System.currentTimeMillis();
+    	
         while (!glfwWindowShouldClose(window)) {
             // Delta time em segundos
             long now   = System.currentTimeMillis();
             float delta = (now - lastFrameTime) / 1000f;
             lastDelta   = Math.min(delta, 0.05f);
             boolean emVoo = currentScreen == Screen.EXTERNAL 
-                    || currentScreen == Screen.DATA;
+                    || currentScreen == Screen.DATA
+                    || currentScreen == Screen.CAMERA;
 
             // Checa morte
             if (emVoo && !paused) {
                 stats.sample(fbw.getLastData());
                 checkTerrainCollision();
-                missionManager.update(delta, fbw, enemy);
-                weather.update(delta, fbw);
 
-                // Checa morte
                 if (fbw.isDead()) {
                     deathTimer += delta;
                     if (deathTimer >= 2.5f) {
                         stats.setCompleted(false);
-                        currentScreen = Screen.GAME_OVER;
-                        deathTimer    = 0f;
+                        stopGameplay();
+                        transitionTo(Screen.GAME_OVER);
+                        deathTimer = 0f;
                     }
                 }
 
+                missionManager.update(delta, fbw, enemy);
+                
+                weather.update(delta, fbw);
+                
                 // Checa missão completa
                 Mission current = missionManager.currentMission();
+                
+                if (current != null) {
+                    String rsoMsg = current.checkRSO();
+                    if (rsoMsg != null) {
+                        triggerRSO(rsoMsg);
+                    }
+                }
+                
                 if (current != null && current.getState() == Mission.State.SUCCESS) {
                     stats.setCompleted(true);
-                    currentScreen = Screen.DEBRIEFING;
+                    stopGameplay();                     
+                    transitionTo(Screen.DEBRIEFING); 
                 }
             }
             
             lastFrameTime = now;
             crtTime += lastDelta;
+            updateHudGlitch();
 
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
             if (escStartPressed) break;
@@ -605,6 +663,25 @@ public class FlyData {
             }
            }
 
+            if (transitioning) {
+                transTimer += lastDelta;
+                float progress = transTimer / transDuration;
+
+                // Na metade, troca a tela de verdade
+                if (progress >= 0.5f && !transHalfDone) {
+                    currentScreen = transTarget;
+                    transHalfDone = true;
+                }
+
+                // Renderiza efeito VHS
+                renderVHSTransition(progress);
+
+                if (progress >= 1.0f) {
+                    transitioning = false;
+                    transTarget   = null;
+                }
+            }
+            
             glfwSwapBuffers(window);
             glfwPollEvents();
         }
@@ -631,190 +708,358 @@ public class FlyData {
 
     private void renderMissionSelect() {
         setup2DLegado();
-        glClearColor(0.02f, 0.02f, 0.05f, 1f);
+        glClearColor(0f, 0f, 0f, 1f);
+
+        float t = crtTime;
+        missionBarY += (missionBarTargetY - missionBarY) * 0.12f;
 
         var missions = missionManager.getMissions();
+        var sel = missions.get(missionSelectedIndex);
 
-        // ── Painel esquerdo: lista de missões ──────────────────────────
-        glDisable(GL_TEXTURE_2D);
-        glColor4f(0f, 0f, 0f, 0.7f);
-        glBegin(GL_QUADS);
-        glVertex2f(0,0); glVertex2f(420,0);
-        glVertex2f(420,720); glVertex2f(0,720);
-        glEnd();
-
-        // Linha separadora
-        glColor3f(0.5f, 0.05f, 0.05f);
-        glLineWidth(2f);
-        glBegin(GL_LINES);
-        glVertex2f(420, 0); glVertex2f(420, 720);
-        glEnd();
-        glLineWidth(1f);
-
+        // ══════════════════════════════════════════════════════════
+        // IMAGEM DE FUNDO — mesma lógica do menu principal
+        // ══════════════════════════════════════════════════════════
         glEnable(GL_TEXTURE_2D);
-        glColor3f(0.6f, 0.6f, 0.6f);
-        textRenderer.renderText("SELECAO DE MISSOES", 40, 50);
-        glColor3f(0.3f, 0.3f, 0.3f);
-        textRenderer.renderText("──────────────────────", 40, 68);
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+        int[] bgTextures = {
+            texPilots, texTakeoff, texSR71One, texMD11,
+            texWeaver, texGilliland, texMarta, texCrews,
+            texPilot23, rsoTextureId
+        };
+
+        float cycleDuration = 5f;
+        float fadeDuration  = 1.5f;
+        float blackGap      = 0.5f;
+        float totalCycle    = cycleDuration + blackGap;
+
+        int currentImg = ((int)(t / totalCycle)) % bgTextures.length;
+        float cycleProgress = (t % totalCycle);
+
+        float imgAlpha = 0f;
+        if (cycleProgress < fadeDuration)
+            imgAlpha = cycleProgress / fadeDuration;
+        else if (cycleProgress < cycleDuration - fadeDuration)
+            imgAlpha = 1f;
+        else if (cycleProgress < cycleDuration)
+            imgAlpha = (cycleDuration - cycleProgress) / fadeDuration;
+        imgAlpha *= 0.2f;
+
+        float zoom = 1.05f + (cycleProgress / cycleDuration) * 0.04f;
+        float panX = (float)(Math.sin(t * 0.06 + currentImg * 1.5) * 35);
+        float panY = (float)(Math.cos(t * 0.04 + currentImg * 2.1) * 20);
+
+        if (imgAlpha > 0.001f) {
+            float imgW = 1280 * zoom;
+            float imgH = 720 * zoom;
+            float ix = (1280 - imgW) / 2 + panX;
+            float iy = (720 - imgH) / 2 + panY;
+
+            glColor4f(0.7f, 0.72f, 0.85f, imgAlpha);
+            glBindTexture(GL_TEXTURE_2D, bgTextures[currentImg]);
+            glBegin(GL_QUADS);
+            glTexCoord2f(0, 0); glVertex2f(ix, iy);
+            glTexCoord2f(1, 0); glVertex2f(ix + imgW, iy);
+            glTexCoord2f(1, 1); glVertex2f(ix + imgW, iy + imgH);
+            glTexCoord2f(0, 1); glVertex2f(ix, iy + imgH);
+            glEnd();
+            glBindTexture(GL_TEXTURE_2D, 0);
+        }
+
+        // ══════════════════════════════════════════════════════════
+        // GRADIENTES
+        // ══════════════════════════════════════════════════════════
+        glDisable(GL_TEXTURE_2D);
+
+        // Topo
+        glBegin(GL_QUADS);
+        glColor4f(0f, 0f, 0f, 0.8f);
+        glVertex2f(0, 0); glVertex2f(1280, 0);
+        glColor4f(0f, 0f, 0f, 0.15f);
+        glVertex2f(1280, 120); glVertex2f(0, 120);
+        glEnd();
+
+        // Bottom
+        glBegin(GL_QUADS);
+        glColor4f(0f, 0f, 0f, 0.15f);
+        glVertex2f(0, 600); glVertex2f(1280, 600);
+        glColor4f(0f, 0f, 0f, 0.8f);
+        glVertex2f(1280, 720); glVertex2f(0, 720);
+        glEnd();
+
+        // Esquerda (protege lista de missões)
+        glBegin(GL_QUADS);
+        glColor4f(0f, 0f, 0f, 0.85f);
+        glVertex2f(0, 0); glVertex2f(0, 720);
+        glColor4f(0f, 0f, 0f, 0.3f);
+        glVertex2f(440, 720); glVertex2f(440, 0);
+        glEnd();
+
+        // Direita (protege briefing)
+        glBegin(GL_QUADS);
+        glColor4f(0f, 0f, 0f, 0.1f);
+        glVertex2f(440, 0); glVertex2f(440, 720);
+        glColor4f(0f, 0f, 0f, 0.6f);
+        glVertex2f(1280, 720); glVertex2f(1280, 0);
+        glEnd();
+
+        // ══════════════════════════════════════════════════════════
+        // PARTÍCULAS
+        // ══════════════════════════════════════════════════════════
+        glPointSize(1.5f);
+        glBegin(GL_POINTS);
+        for (int i = 0; i < 35; i++) {
+            float sx = (float)(Math.sin(i * 127.1) * 0.5 + 0.5) * 1280;
+            float sy = ((float)(Math.cos(i * 311.7) * 0.5 + 0.5) * 720 - t * (2 + i % 6));
+            sy = ((sy % 780) + 780) % 780 - 30;
+            float sa = (float)(Math.sin(t * 0.8 + i * 0.5) * 0.5 + 0.5) * 0.15f;
+            glColor4f(0.7f, 0.72f, 0.9f, sa);
+            glVertex2f(sx, sy);
+        }
+        glEnd();
+        glPointSize(1f);
+
+        // ══════════════════════════════════════════════════════════
+        // LINHA DIVISÓRIA VERTICAL — separa lista de briefing
+        // ══════════════════════════════════════════════════════════
+        float divAlpha = 0.2f + (float)(Math.sin(t * 1.5) * 0.05);
+        glColor4f(0.6f, 0.62f, 0.75f, divAlpha);
+        glBegin(GL_QUADS);
+        glVertex2f(430, 80); glVertex2f(431, 80);
+        glVertex2f(431, 660); glVertex2f(430, 660);
+        glEnd();
+
+        // ══════════════════════════════════════════════════════════
+        // CABEÇALHO
+        // ══════════════════════════════════════════════════════════
+        glEnable(GL_TEXTURE_2D);
+
+        // Título
+        glColor4f(1f, 1f, 1f, 1f);
+        textRenderer.renderText("MISSION SELECT", 40, 50, 48);
+
+        // Linha sob o título
+        glDisable(GL_TEXTURE_2D);
+        float headerLineW = Math.min(380, t * 200);
+        glColor4f(0.6f, 0.62f, 0.75f, 0.5f);
+        glBegin(GL_QUADS);
+        glVertex2f(40, 78); glVertex2f(40 + headerLineW, 78);
+        glVertex2f(40 + headerLineW, 79); glVertex2f(40, 79);
+        glEnd();
+
+        // Subtítulo
+        glEnable(GL_TEXTURE_2D);
+        glColor4f(0.45f, 0.47f, 0.55f, 0.7f);
+        textRenderer.renderText("CLASSIFIED OPERATIONS // SR-71 PROGRAM", 40, 92, 16);
+
+        // ══════════════════════════════════════════════════════════
+        // BARRA DE SELEÇÃO — desliza entre missões
+        // ══════════════════════════════════════════════════════════
+        glDisable(GL_TEXTURE_2D);
+
+        float mBarTop = missionBarY - 8;
+        float mBarBot = missionBarY + 82;
+
+        // Glow
+        glColor4f(0.4f, 0.42f, 0.6f, 0.1f);
+        glBegin(GL_QUADS);
+        glVertex2f(0, mBarTop - 6);
+        glVertex2f(425, mBarTop - 6);
+        glVertex2f(425, mBarBot + 6);
+        glVertex2f(0, mBarBot + 6);
+        glEnd();
+
+        // Barra vertical fina
+        glColor4f(0.85f, 0.88f, 1f, 0.9f);
+        glBegin(GL_QUADS);
+        glVertex2f(28, mBarTop + 4);
+        glVertex2f(31, mBarTop + 4);
+        glVertex2f(31, mBarBot - 4);
+        glVertex2f(28, mBarBot - 4);
+        glEnd();
+
+        // ══════════════════════════════════════════════════════════
+        // LISTA DE MISSÕES (esquerda)
+        // ══════════════════════════════════════════════════════════
+        glEnable(GL_TEXTURE_2D);
 
         for (int i = 0; i < missions.size(); i++) {
             var m = missions.get(i);
-            float y = 110f + i * 90f;
+            float baseY = 140 + i * 100;
+            boolean isSel = (i == missionSelectedIndex);
+            float proximity = 1f - Math.min(1f, Math.abs(missionBarY - baseY) / 100f);
 
-            String statusTag = switch (m.getState()) {
-                case WAITING -> "";
-                case ACTIVE  -> "  [ATIVA]";
-                case SUCCESS -> "  [OK]";
-                case FAILED  -> "  [X]";
-            };
-
-            if (i == missionSelectedIndex) {
-                // Destaque da selecionada
-                glDisable(GL_TEXTURE_2D);
-                glColor4f(0.6f, 0.05f, 0.05f, 0.4f);
-                glBegin(GL_QUADS);
-                glVertex2f(0, y - 4); glVertex2f(418, y - 4);
-                glVertex2f(418, y + 56); glVertex2f(0, y + 56);
-                glEnd();
-                glEnable(GL_TEXTURE_2D);
-                glColor3f(1f, 0.3f, 0.3f);
+            // Número da missão
+            if (isSel) {
+                glColor4f(0.85f, 0.88f, 1f, 0.8f);
             } else {
-                glColor3f(0.55f, 0.55f, 0.55f);
+                glColor4f(0.25f, 0.25f, 0.3f, 0.5f + proximity * 0.2f);
             }
+            textRenderer.renderText(String.format("%02d", i + 1), 40, baseY, 32);
 
-            textRenderer.renderText((i + 1) + ". " + m.getName() + statusTag, 30, y);
+            // Nome da missão
+            if (isSel) {
+                glColor4f(1f, 1f, 1f, 1f);
+            } else {
+                float b = 0.4f + proximity * 0.2f;
+                glColor4f(b, b, b + 0.05f, 0.85f);
+            }
+            textRenderer.renderText(m.getName(), 85, baseY, 24);
 
-            // Tipo da missão em menor
-            glColor3f(i == missionSelectedIndex ? 0.8f : 0.35f, 0.35f, 0.35f);
+            // Tipo da missão
             String tipo = m.getClass().getSimpleName()
                 .replace("Mission", "")
-                .replace("Recon",   "Reconhecimento")
-                .replace("Escape",  "Fuga de Missil")
-                .replace("FlightWindow", "Janela de Voo");
-            textRenderer.renderText("   " + tipo, 30, y + 22);
+                .replace("Recon", "RECONNAISSANCE")
+                .replace("Escape", "EVASION")
+                .replace("FlightWindow", "FLIGHT ENVELOPE");
+
+            if (isSel)
+                glColor4f(0.55f, 0.58f, 0.7f, 0.8f);
+            else
+                glColor4f(0.3f, 0.3f, 0.35f, 0.5f + proximity * 0.15f);
+            textRenderer.renderText(tipo, 85, baseY + 25, 16);
+
+            // Status
+            String statusTag = switch (m.getState()) {
+                case WAITING -> "";
+                case ACTIVE  -> "[ACTIVE]";
+                case SUCCESS -> "[COMPLETE]";
+                case FAILED  -> "[FAILED]";
+            };
+            if (!statusTag.isEmpty()) {
+                float[] sc = switch (m.getState()) {
+                    case SUCCESS -> new float[]{0.3f, 0.9f, 0.4f, 0.7f};
+                    case FAILED  -> new float[]{0.9f, 0.3f, 0.3f, 0.7f};
+                    case ACTIVE  -> new float[]{0.9f, 0.9f, 0.3f, 0.7f};
+                    default      -> new float[]{0.5f, 0.5f, 0.5f, 0.5f};
+                };
+                glColor4f(sc[0], sc[1], sc[2], sc[3]);
+                textRenderer.renderText(statusTag, 85, baseY + 45, 16);
+            }
         }
 
-        // ── Painel direito: briefing da missão selecionada ────────────
-        var sel = missions.get(missionSelectedIndex);
+        // ══════════════════════════════════════════════════════════
+        // BRIEFING DA MISSÃO SELECIONADA (direita)
+        // ══════════════════════════════════════════════════════════
 
-        glEnable(GL_TEXTURE_2D);
-        glColor3f(0.8f, 0.8f, 0.8f);
-        textRenderer.renderText(sel.getName(), 450, 80);
+        // Nome grande da missão
+        glColor4f(1f, 1f, 1f, 0.95f);
+        textRenderer.renderText(sel.getName(), 460, 130, 32);
 
-        glColor3f(0.3f, 0.3f, 0.3f);
+        // Linha sob o nome
         glDisable(GL_TEXTURE_2D);
-        glBegin(GL_LINES);
-        glVertex2f(450, 100); glVertex2f(1240, 100);
+        glColor4f(0.5f, 0.52f, 0.65f, 0.4f);
+        glBegin(GL_QUADS);
+        glVertex2f(460, 158); glVertex2f(1200, 158);
+        glVertex2f(1200, 159); glVertex2f(460, 159);
         glEnd();
+
+        // Label BRIEFING
         glEnable(GL_TEXTURE_2D);
+        glColor4f(0.5f, 0.55f, 0.7f, 0.7f);
+        textRenderer.renderText("BRIEFING", 460, 175, 16);
 
-        glColor3f(0.55f, 0.75f, 0.55f);
-        textRenderer.renderText("BRIEFING:", 450, 120);
-        glColor3f(0.7f, 0.7f, 0.7f);
-
+        // Texto do briefing
+        glColor4f(0.7f, 0.72f, 0.8f, 0.85f);
         String[] lines = sel.getBriefing().split("\n");
         for (int l = 0; l < lines.length; l++) {
-            textRenderer.renderText(lines[l], 450, 145 + l * 22);
+            // Linhas vazias = headers, ficam mais claras
+            if (lines[l].trim().isEmpty()) continue;
+            if (lines[l].equals(lines[l].toUpperCase()) && lines[l].length() < 40) {
+                glColor4f(0.85f, 0.87f, 0.95f, 0.9f);
+                textRenderer.renderText(lines[l], 460, 200 + l * 22, 20);
+            } else {
+                glColor4f(0.6f, 0.62f, 0.72f, 0.8f);
+                textRenderer.renderText(lines[l], 460, 200 + l * 22, 16);
+            }
         }
 
-        // Status da missão selecionada
-        float statusY = 420;
-        glColor3f(0.4f, 0.4f, 0.4f);
+        // ══════════════════════════════════════════════════════════
+        // STATUS DA MISSÃO
+        // ══════════════════════════════════════════════════════════
+
+        // Linha separadora
         glDisable(GL_TEXTURE_2D);
-        glBegin(GL_LINES);
-        glVertex2f(450, statusY); glVertex2f(1240, statusY);
+        glColor4f(0.4f, 0.42f, 0.55f, 0.3f);
+        glBegin(GL_QUADS);
+        glVertex2f(460, 520); glVertex2f(1200, 520);
+        glVertex2f(1200, 521); glVertex2f(460, 521);
         glEnd();
+
         glEnable(GL_TEXTURE_2D);
+        glColor4f(0.5f, 0.55f, 0.7f, 0.6f);
+        textRenderer.renderText("STATUS", 460, 535, 16);
 
         String statusText = switch (sel.getState()) {
-            case WAITING -> "Pronta para iniciar";
-            case ACTIVE  -> "Em andamento";
-            case SUCCESS -> "Concluida com sucesso";
-            case FAILED  -> "Falhou — pode tentar novamente";
+            case WAITING -> "READY FOR DEPLOYMENT";
+            case ACTIVE  -> "IN PROGRESS";
+            case SUCCESS -> "MISSION ACCOMPLISHED";
+            case FAILED  -> "MISSION FAILED — RETRY AVAILABLE";
         };
-        float[] statusColor = switch (sel.getState()) {
-            case WAITING -> new float[]{0.6f, 0.6f, 0.6f};
-            case ACTIVE  -> new float[]{1f, 1f, 0f};
-            case SUCCESS -> new float[]{0.2f, 1f, 0.3f};
-            case FAILED  -> new float[]{1f, 0.2f, 0.2f};
+        float[] stColor = switch (sel.getState()) {
+            case WAITING -> new float[]{0.6f, 0.62f, 0.7f};
+            case ACTIVE  -> new float[]{0.9f, 0.9f, 0.4f};
+            case SUCCESS -> new float[]{0.3f, 0.95f, 0.45f};
+            case FAILED  -> new float[]{0.95f, 0.3f, 0.3f};
         };
-        glColor3f(statusColor[0], statusColor[1], statusColor[2]);
-        textRenderer.renderText("STATUS: " + statusText, 450, statusY + 20);
+        glColor3f(stColor[0], stColor[1], stColor[2]);
+        textRenderer.renderText(statusText, 460, 558, 20);
 
-        // Rodapé
-        glColor3f(0.3f, 0.3f, 0.3f);
-        textRenderer.renderText("SETAS = Navegar   ENTER = Iniciar   N = Voltar", 450, 680);
+        // ══════════════════════════════════════════════════════════
+        // CONTROLES
+        // ══════════════════════════════════════════════════════════
+        glColor4f(0.35f, 0.35f, 0.4f, 0.5f);
+        textRenderer.renderText("NAVIGATE", 460, 640, 16);
+        textRenderer.renderText("START MISSION", 460, 658, 16);
+        textRenderer.renderText("BACK", 460, 676, 16);
+        glColor4f(0.6f, 0.6f, 0.65f, 0.6f);
+        textRenderer.renderText("UP / DOWN", 590, 640, 16);
+        textRenderer.renderText("ENTER", 590, 658, 16);
+        textRenderer.renderText("ESC", 590, 676, 16);
+
+        // ══════════════════════════════════════════════════════════
+        // BARRAS FINAS
+        // ══════════════════════════════════════════════════════════
+        glDisable(GL_TEXTURE_2D);
+        glColor4f(0.6f, 0.62f, 0.75f, 0.25f);
+        glBegin(GL_QUADS);
+        glVertex2f(0, 0); glVertex2f(1280, 0);
+        glVertex2f(1280, 1); glVertex2f(0, 1);
+        glEnd();
+        glBegin(GL_QUADS);
+        glVertex2f(0, 719); glVertex2f(1280, 719);
+        glVertex2f(1280, 720); glVertex2f(0, 720);
+        glEnd();
+
+        drawCRTOverlay();
     }
     
     private void renderDataScreen() {
-        glClearColor(0.04f, 0.04f, 0.06f, 1f);
+        glClearColor(0.03f, 0.03f, 0.05f, 1f);
         FlyByWire.FlightData data = fbw.getLastData();
         if (data == null) return;
 
-        // ── 1. MODELO 3D (igual ao antes) ────────────────────────────
-        if (showModel) {
-            glEnable(GL_DEPTH_TEST);
-            Vector3f origin = new Vector3f(0, 0, 0);
-            camera.setMode(cameraMode, origin);
-
-            Matrix4f modelMatrix = new Matrix4f()
-                .translate(0f, -2f, -10f)
-                .rotateX((float)Math.toRadians(-90))
-                .rotateZ((float)Math.toRadians(180))
-                .rotateY((float)Math.toRadians(90))
-                .rotateX((float)Math.toRadians(data.pitch))
-                .rotateZ((float)Math.toRadians(data.roll))
-                .scale(0.3f);
-
-            shader.bind();
-            shader.setUniformMatrix4f("projection", camera.getProjectionMatrix());
-            shader.setUniformMatrix4f("view",       camera.getViewMatrix());
-            shader.setUniformMatrix4f("model",      modelMatrix);
-            shader.setUniform3f("objectColor", 0.4f, 0.4f, 0.4f);
-            shader.setUniform3f("lightPos",    0f, 100f, 0f);
-            shader.setUniform3f("lightColor",  1.0f, 1.0f, 1.0f);
-            shader.setUniform3f("viewPos",     camera.getPosition().x,
-                                               camera.getPosition().y,
-                                               camera.getPosition().z);
-            // Uniforms obrigatórios do novo fragment shader
-            shader.setUniform1i("useTexture",  0);
-            shader.setUniform1i("useTerrain",  0);
-            shader.setUniform3f("lightDir",   -0.5f, -1.0f, -0.3f);
-            shader.setUniform3f("skyColor",    0.04f, 0.04f, 0.06f);
-            shader.setUniform3f("rimColor",    0.3f, 0.5f, 1.0f);
-            shader.setUniformFloat("rimStrength",      0.5f);
-            shader.setUniformFloat("fogDensity",       0.0f);
-            shader.setUniform3f("emissiveColor",       0f, 0f, 0f);
-            shader.setUniformFloat("emissiveStrength", 0f);
-            shader.setUniform3f("sunDir",      0.4f, 0.8f, 0.3f);
-
-            for (Model m : models) m.render();
-            shader.unbind(); // ESSENCIAL — sem isso quebra o 2D legado
-        }
-
-        // ── 2. HUD 2D ─────────────────────────────────────────────────
         setup2DLegado();
         glEnable(GL_TEXTURE_2D);
 
-        // Horizonte artificial
-        drawArtificialHorizon(640, 360, data);
+        // Centro: instrumentos principais
+        drawArtificialHorizon(500, 300, data);
+        drawCompassRose(500, 570, data);
+        drawVSI(620, 500, data);
 
-        // Radar tático
-        drawRadar(1100, 580, 140);
-
-        // Estado dos sistemas
+        // Esquerda baixo: gráfico + barras
+        drawSpeedGraph(30, 350, data);
         drawSystemsPanel(data);
 
-        // Gráfico de velocidade
-        drawSpeedGraph(50, 400, data);
+        // Direita: missão + radar
+        drawMissionInfo(830, 230, data);
+        drawRadar(1120, 570, 100);
 
-        // HUD principal + altímetro
+        // HUD verde por cima (painéis topo-esquerda e topo-direita)
         renderHUD();
         renderCountermeasureHUD();
-
-        // G-force
         drawGForce();
-        
         drawCRTOverlay();
     }
 
@@ -824,80 +1069,262 @@ public class FlyData {
         glDisable(GL_TEXTURE_2D);
         glBindTexture(GL_TEXTURE_2D, 0);
 
-        float size  = 100f;
+        float size = 120f;
         float pitch = (float) data.pitch;
         float roll  = (float) data.roll;
+        float pitchOffset = pitch * 2.5f;
 
-        // Fundo preto
-        glColor3f(0f, 0f, 0f);
+        // ── Fundo circular com clip ──────────────────────────────
+        // Céu — gradiente azul
         glBegin(GL_QUADS);
+        glColor3f(0.08f, 0.2f, 0.5f);
         glVertex2f(cx - size, cy - size);
         glVertex2f(cx + size, cy - size);
-        glVertex2f(cx + size, cy + size);
-        glVertex2f(cx - size, cy + size);
-        glEnd();
-
-        // Linha do horizonte rotacionada pelo roll + deslocada pelo pitch
-        float pitchOffset = pitch * 3f;
-        float rollRad     = (float) Math.toRadians(roll);
-        float cosR        = (float) Math.cos(rollRad);
-        float sinR        = (float) Math.sin(rollRad);
-
-        // Metade de cima = céu (azul)
-        glColor3f(0.2f, 0.5f, 0.8f);
-        glBegin(GL_QUADS);
-        glVertex2f(cx - size, cy - size);
-        glVertex2f(cx + size, cy - size);
+        glColor3f(0.15f, 0.35f, 0.7f);
         glVertex2f(cx + size, cy + pitchOffset);
         glVertex2f(cx - size, cy + pitchOffset);
         glEnd();
 
-        // Metade de baixo = terra (marrom)
-        glColor3f(0.4f, 0.25f, 0.1f);
+        // Terra — gradiente marrom
         glBegin(GL_QUADS);
+        glColor3f(0.35f, 0.22f, 0.08f);
         glVertex2f(cx - size, cy + pitchOffset);
         glVertex2f(cx + size, cy + pitchOffset);
+        glColor3f(0.2f, 0.12f, 0.04f);
         glVertex2f(cx + size, cy + size);
         glVertex2f(cx - size, cy + size);
         glEnd();
 
-        // Linha do horizonte inclinada
+        // Linha do horizonte
         glColor3f(1f, 1f, 1f);
         glLineWidth(2f);
         glBegin(GL_LINES);
-        glVertex2f(cx - size * cosR - pitchOffset * sinR,
-                   cy + pitchOffset * cosR - size * sinR);
-        glVertex2f(cx + size * cosR + pitchOffset * sinR,
-                   cy - pitchOffset * cosR + size * sinR);
+        glVertex2f(cx - size, cy + pitchOffset);
+        glVertex2f(cx + size, cy + pitchOffset);
         glEnd();
 
-        // Marca central (avião)
-        glColor3f(1f, 1f, 0f);
-        glLineWidth(2f);
+        // ── Marcas de pitch (cada 10 graus) ──────────────────────
+        glColor4f(1f, 1f, 1f, 0.5f);
+        glLineWidth(1f);
+        for (int deg = -30; deg <= 30; deg += 10) {
+            if (deg == 0) continue;
+            float markY = cy + pitchOffset - deg * 2.5f;
+            if (markY < cy - size + 10 || markY > cy + size - 10) continue;
+            float markW = (deg % 20 == 0) ? 40 : 20;
+            glBegin(GL_LINES);
+            glVertex2f(cx - markW, markY);
+            glVertex2f(cx + markW, markY);
+            glEnd();
+
+            // Números nos graus maiores
+            if (deg % 20 == 0) {
+                glEnable(GL_TEXTURE_2D);
+                glColor4f(1f, 1f, 1f, 0.4f);
+                textRenderer.renderText(String.valueOf(Math.abs(deg)), cx + markW + 5, markY - 4, 16);
+                glDisable(GL_TEXTURE_2D);
+            }
+        }
+
+        // ── Marca central (avião) ────────────────────────────────
+        glColor4f(1f, 0.8f, 0f, 0.9f);
+        glLineWidth(2.5f);
         glBegin(GL_LINES);
-        glVertex2f(cx - 30, cy); glVertex2f(cx - 10, cy);
-        glVertex2f(cx - 10, cy); glVertex2f(cx - 10, cy + 8);
-        glVertex2f(cx + 10, cy); glVertex2f(cx + 30, cy);
-        glVertex2f(cx + 10, cy); glVertex2f(cx + 10, cy + 8);
+        glVertex2f(cx - 35, cy); glVertex2f(cx - 12, cy);
+        glVertex2f(cx - 12, cy); glVertex2f(cx - 12, cy + 8);
+        glVertex2f(cx + 12, cy); glVertex2f(cx + 35, cy);
+        glVertex2f(cx + 12, cy); glVertex2f(cx + 12, cy + 8);
         glEnd();
+        // Ponto central
+        glPointSize(4f);
+        glBegin(GL_POINTS);
+        glVertex2f(cx, cy);
+        glEnd();
+        glPointSize(1f);
         glLineWidth(1f);
 
-        // Borda circular
-        glColor3f(0.6f, 0.6f, 0.6f);
-        glLineWidth(1.5f);
-        int segs = 48;
+        // ── Indicadores de bank no arco superior ─────────────────
+        glColor4f(1f, 1f, 1f, 0.35f);
+        for (int deg : new int[]{-60, -45, -30, -20, -10, 0, 10, 20, 30, 45, 60}) {
+            double a = Math.toRadians(-90 + deg);
+            float innerR = size - 8;
+            float outerR = size - (deg % 30 == 0 ? 18 : 12);
+            glBegin(GL_LINES);
+            glVertex2f(cx + (float)Math.cos(a) * outerR, cy + (float)Math.sin(a) * outerR);
+            glVertex2f(cx + (float)Math.cos(a) * innerR, cy + (float)Math.sin(a) * innerR);
+            glEnd();
+        }
+
+        // Indicador de bank atual
+        double bankA = Math.toRadians(-90 - roll);
+        float triR = size - 4;
+        glColor4f(1f, 0.8f, 0f, 0.9f);
+        glBegin(GL_TRIANGLES);
+        float bx = cx + (float)Math.cos(bankA) * triR;
+        float by = cy + (float)Math.sin(bankA) * triR;
+        glVertex2f(bx, by);
+        glVertex2f(bx - 5, by - 10);
+        glVertex2f(bx + 5, by - 10);
+        glEnd();
+
+        // ── Borda circular ───────────────────────────────────────
+        glColor4f(0.5f, 0.52f, 0.65f, 0.5f);
+        glLineWidth(2f);
         glBegin(GL_LINE_LOOP);
-        for (int i = 0; i < segs; i++) {
-            double a = Math.PI * 2 * i / segs;
-            glVertex2f(cx + (float) Math.cos(a) * size, cy + (float) Math.sin(a) * size);
+        for (int i = 0; i < 64; i++) {
+            double a = Math.PI * 2 * i / 64;
+            glVertex2f(cx + (float)Math.cos(a) * size, cy + (float)Math.sin(a) * size);
         }
         glEnd();
         glLineWidth(1f);
 
         // Label
         glEnable(GL_TEXTURE_2D);
-        glColor3f(0.6f, 0.6f, 0.6f);
-        textRenderer.renderText("ATITUDE", cx - 28, cy - size - 15);
+        glColor4f(0.5f, 0.52f, 0.65f, 0.6f);
+        textRenderer.renderText("ATTITUDE", cx - 30, cy - size - 18, 16);
+    }
+    
+    private void drawCompassRose(float cx, float cy, FlyByWire.FlightData data) {
+        setup2DLegado();
+        glDisable(GL_TEXTURE_2D);
+
+        float radius = 60f;
+        double heading = data.yaw % 360;
+        if (heading < 0) heading += 360;
+
+        // Fundo
+        glColor4f(0.02f, 0.02f, 0.04f, 0.8f);
+        glBegin(GL_TRIANGLE_FAN);
+        glVertex2f(cx, cy);
+        for (int i = 0; i <= 64; i++) {
+            double a = Math.PI * 2 * i / 64;
+            glVertex2f(cx + (float)Math.cos(a) * radius, cy + (float)Math.sin(a) * radius);
+        }
+        glEnd();
+
+        // Marcas de graus — rotacionadas pelo heading
+        for (int deg = 0; deg < 360; deg += 10) {
+            double a = Math.toRadians(deg - heading - 90);
+            float innerR = (deg % 30 == 0) ? radius - 18 : radius - 10;
+            float outerR = radius - 4;
+
+            if (deg % 30 == 0)
+                glColor4f(0.7f, 0.72f, 0.85f, 0.6f);
+            else
+                glColor4f(0.4f, 0.42f, 0.55f, 0.3f);
+
+            glBegin(GL_LINES);
+            glVertex2f(cx + (float)Math.cos(a) * innerR, cy + (float)Math.sin(a) * innerR);
+            glVertex2f(cx + (float)Math.cos(a) * outerR, cy + (float)Math.sin(a) * outerR);
+            glEnd();
+        }
+
+        // Labels N S E W
+        glEnable(GL_TEXTURE_2D);
+        String[] dirs = {"N", "E", "S", "W"};
+        for (int i = 0; i < 4; i++) {
+            double a = Math.toRadians(i * 90 - heading - 90);
+            float lx = cx + (float)Math.cos(a) * (radius - 28);
+            float ly = cy + (float)Math.sin(a) * (radius - 28);
+            if (i == 0) // North = vermelho
+                glColor4f(0.9f, 0.3f, 0.3f, 0.8f);
+            else
+                glColor4f(0.7f, 0.72f, 0.85f, 0.7f);
+            textRenderer.renderText(dirs[i], lx - 4, ly - 6, 16);
+        }
+
+        // Triângulo indicador fixo no topo
+        glDisable(GL_TEXTURE_2D);
+        glColor4f(1f, 0.8f, 0f, 0.9f);
+        glBegin(GL_TRIANGLES);
+        glVertex2f(cx, cy - radius + 2);
+        glVertex2f(cx - 5, cy - radius - 8);
+        glVertex2f(cx + 5, cy - radius - 8);
+        glEnd();
+
+        // Borda
+        glColor4f(0.5f, 0.52f, 0.65f, 0.4f);
+        glLineWidth(1.5f);
+        glBegin(GL_LINE_LOOP);
+        for (int i = 0; i < 64; i++) {
+            double a = Math.PI * 2 * i / 64;
+            glVertex2f(cx + (float)Math.cos(a) * radius, cy + (float)Math.sin(a) * radius);
+        }
+        glEnd();
+        glLineWidth(1f);
+
+        // Heading digital
+        glEnable(GL_TEXTURE_2D);
+        glColor4f(0.5f, 0.52f, 0.65f, 0.5f);
+        textRenderer.renderText("HDG", cx - 14, cy - radius - 22, 16);
+        glColor4f(0.9f, 0.92f, 1f, 0.9f);
+        textRenderer.renderText(String.format("%03.0f", heading), cx - 14, cy + radius + 8, 20);
+    }
+    
+    private void drawVSI(float x, float y, FlyByWire.FlightData data) {
+        setup2DLegado();
+        glDisable(GL_TEXTURE_2D);
+
+        float w = 40, h = 100;
+
+        glColor4f(0.02f, 0.02f, 0.04f, 0.8f);
+        glBegin(GL_QUADS);
+        glVertex2f(x, y); glVertex2f(x + w, y);
+        glVertex2f(x + w, y + h); glVertex2f(x, y + h);
+        glEnd();
+
+        glColor4f(0.5f, 0.52f, 0.65f, 0.3f);
+        glBegin(GL_LINE_LOOP);
+        glVertex2f(x, y); glVertex2f(x + w, y);
+        glVertex2f(x + w, y + h); glVertex2f(x, y + h);
+        glEnd();
+
+        float centerY = y + h / 2;
+        glColor4f(0.5f, 0.52f, 0.65f, 0.4f);
+        glBegin(GL_LINES);
+        glVertex2f(x + 3, centerY); glVertex2f(x + w - 3, centerY);
+        glEnd();
+
+        // Marcas
+        glColor4f(0.4f, 0.42f, 0.55f, 0.3f);
+        for (int i = -3; i <= 3; i++) {
+            if (i == 0) continue;
+            float markY = centerY - i * (h / 8);
+            float markW = (i % 2 == 0) ? 12 : 6;
+            glBegin(GL_LINES);
+            glVertex2f(x + w - markW - 3, markY);
+            glVertex2f(x + w - 3, markY);
+            glEnd();
+        }
+
+        double vertSpeed = Math.sin(Math.toRadians(data.pitch)) * data.speed * 60 * 3.0;
+        float maxVS = 10000;
+        float normalized = (float)(vertSpeed / maxVS);
+        normalized = Math.max(-1, Math.min(1, normalized));
+
+        float barH = normalized * (h / 2 - 8);
+        if (normalized > 0) {
+            glColor4f(0.3f, 0.8f, 0.5f, 0.6f);
+            glBegin(GL_QUADS);
+            glVertex2f(x + 5, centerY - barH);
+            glVertex2f(x + 20, centerY - barH);
+            glVertex2f(x + 20, centerY);
+            glVertex2f(x + 5, centerY);
+            glEnd();
+        } else {
+            glColor4f(0.8f, 0.3f, 0.3f, 0.6f);
+            glBegin(GL_QUADS);
+            glVertex2f(x + 5, centerY);
+            glVertex2f(x + 20, centerY);
+            glVertex2f(x + 20, centerY - barH);
+            glVertex2f(x + 5, centerY - barH);
+            glEnd();
+        }
+
+        glEnable(GL_TEXTURE_2D);
+        glColor4f(0.5f, 0.52f, 0.65f, 0.5f);
+        textRenderer.renderText("VS", x + 8, y - 14, 16);
+        glColor4f(0.85f, 0.87f, 0.95f, 0.85f);
+        textRenderer.renderText(String.format("%+.0f", vertSpeed), x - 5, y + h + 4, 16);
     }
 
     // ── RADAR TÁTICO ──────────────────────────────────────────────────
@@ -905,8 +1332,8 @@ public class FlyData {
         setup2DLegado();
         glDisable(GL_TEXTURE_2D);
 
-        // Fundo escuro
-        glColor3f(0f, 0.08f, 0f);
+        // Fundo
+        glColor4f(0.02f, 0.03f, 0.02f, 0.8f);
         glBegin(GL_TRIANGLE_FAN);
         glVertex2f(cx, cy);
         for (int i = 0; i <= 64; i++) {
@@ -916,109 +1343,351 @@ public class FlyData {
         glEnd();
 
         // Círculos de alcance
-        glColor3f(0f, 0.35f, 0f);
-        glLineWidth(0.5f);
-        for (float r : new float[]{radius * 0.33f, radius * 0.66f, radius}) {
+        float[] rings = {0.33f, 0.66f, 1f};
+        for (float r : rings) {
+            glColor4f(0.2f, 0.4f, 0.25f, 0.2f);
             glBegin(GL_LINE_LOOP);
             for (int i = 0; i < 64; i++) {
                 double a = Math.PI * 2 * i / 64;
-                glVertex2f(cx + (float)Math.cos(a) * r, cy + (float)Math.sin(a) * r);
+                glVertex2f(cx + (float)Math.cos(a) * radius * r,
+                           cy + (float)Math.sin(a) * radius * r);
             }
             glEnd();
         }
 
-        // Linhas de grade
+        // Grade
+        glColor4f(0.2f, 0.4f, 0.25f, 0.15f);
         glBegin(GL_LINES);
         glVertex2f(cx - radius, cy); glVertex2f(cx + radius, cy);
         glVertex2f(cx, cy - radius); glVertex2f(cx, cy + radius);
         glEnd();
 
+        // Sweep animado
+        float sweep = crtTime * 50f;
+        glColor4f(0.2f, 0.8f, 0.3f, 0.2f);
+        glLineWidth(2f);
+        glBegin(GL_LINES);
+        glVertex2f(cx, cy);
+        glVertex2f(cx + (float)Math.cos(Math.toRadians(sweep)) * radius,
+                   cy + (float)Math.sin(Math.toRadians(sweep)) * radius);
+        glEnd();
+        // Trail
+        for (int i = 1; i <= 6; i++) {
+            float ta = sweep - i * 5f;
+            glColor4f(0.15f, 0.6f, 0.25f, Math.max(0, 0.12f - i * 0.02f));
+            glBegin(GL_LINES);
+            glVertex2f(cx, cy);
+            glVertex2f(cx + (float)Math.cos(Math.toRadians(ta)) * radius,
+                       cy + (float)Math.sin(Math.toRadians(ta)) * radius);
+            glEnd();
+        }
+        glLineWidth(1f);
+
         // Avião no centro
-        glColor3f(0f, 1f, 0.3f);
-        glPointSize(5f);
+        glColor4f(0.3f, 1f, 0.4f, 0.9f);
+        glPointSize(4f);
         glBegin(GL_POINTS);
         glVertex2f(cx, cy);
         glEnd();
 
-        // Inimigo (se existir)
+        // Inimigo
         if (enemy != null) {
             Vector3f myPos  = fbw.getPosicao();
-            Vector3f enyPos = enemy.getPosition(); // precisa existir no Enemy
+            Vector3f enyPos = enemy.getPosition();
             if (enyPos != null) {
-                float scale = radius / 50000f; // 50km de alcance do radar
+                float scale = radius / 50000f;
                 float ex = cx + (enyPos.x - myPos.x) * scale;
                 float ey = cy + (enyPos.z - myPos.z) * scale;
-
-                // Só desenha se estiver dentro do radar
                 if (Math.hypot(ex - cx, ey - cy) < radius) {
-                    glColor3f(1f, 0.2f, 0.2f);
-                    glPointSize(6f);
+                    // Blip pulsante
+                    float blip = 0.7f + (float)(Math.sin(crtTime * 5) * 0.3);
+                    glColor4f(1f, 0.3f, 0.2f, blip);
+                    glPointSize(5f);
                     glBegin(GL_POINTS);
                     glVertex2f(ex, ey);
                     glEnd();
                 }
             }
         }
-
         glPointSize(1f);
+
+        // Borda
+        glColor4f(0.3f, 0.6f, 0.35f, 0.4f);
+        glLineWidth(1.5f);
+        glBegin(GL_LINE_LOOP);
+        for (int i = 0; i < 64; i++) {
+            double a = Math.PI * 2 * i / 64;
+            glVertex2f(cx + (float)Math.cos(a) * radius, cy + (float)Math.sin(a) * radius);
+        }
+        glEnd();
         glLineWidth(1f);
 
+        // Label
         glEnable(GL_TEXTURE_2D);
-        glColor3f(0f, 0.8f, 0.2f);
-        textRenderer.renderText("RADAR", cx - 18, cy - radius - 15);
+        glColor4f(0.3f, 0.65f, 0.35f, 0.5f);
+        textRenderer.renderText("RADAR", cx - 18, cy - radius - 16, 16);
+        glColor4f(0.25f, 0.5f, 0.3f, 0.35f);
+        textRenderer.renderText("50km", cx + radius - 25, cy + radius + 4, 16);
     }
 
     // ── SISTEMAS ──────────────────────────────────────────────────────
     private void drawSystemsPanel(FlyByWire.FlightData data) {
         setup2DLegado();
-        float px = 50, py = 500;
+        float px = 30, py = 550;
 
         glEnable(GL_TEXTURE_2D);
-        glColor3f(0.5f, 0.5f, 0.5f);
-        textRenderer.renderText("SISTEMAS", px, py);
+        glColor4f(0.5f, 0.52f, 0.65f, 0.5f);
+        textRenderer.renderText("SYSTEMS", px, py - 5, 16);
 
-        // Barras de status
-        drawBar(px, py + 25, 160, 14, (float)(fbw.getEngineTemp() / 100.0),
-                "ENG TEMP", 0.2f, 0.8f, 0.2f, 0.9f, 0.1f, 0.1f);
+        drawModernBar(px, py + 12, 160, 10, (float)(fbw.getEngineTemp() / 100.0),
+            "ENG", fbw.getEngineTemp() > 80);
+        drawModernBar(px, py + 34, 160, 10, (float)(fbw.getFuel() / 100000.0),
+            "FUEL", fbw.getFuel() / 100000.0 < 0.2);
+        drawModernBar(px, py + 56, 160, 10, (float)(fbw.getThrottle() / 6000.0),
+            "THR", false);
 
-        drawBar(px, py + 50, 160, 14, (float)(fbw.getFuel() / 100000.0),
-                "FUEL", 0.2f, 0.6f, 1.0f, 1.0f, 0.5f, 0.0f);
-
-        drawBar(px, py + 75, 160, 14, (float)(fbw.getThrottle() / 6000.0),
-                "THROTTLE", 0.3f, 0.9f, 0.3f, 0.9f, 0.3f, 0.3f);
-
-        // Mach em destaque
-        glColor3f(0f, 1f, 0.5f);
-        textRenderer.renderText(String.format("MACH %.2f", data.mach), px, py + 105);
+        float machPct = (float)Math.min(data.mach / 3.5, 1.0);
+        glColor4f(0.3f + machPct * 0.7f, 0.9f - machPct * 0.4f, 0.4f - machPct * 0.3f, 0.9f);
+        textRenderer.renderText(String.format("MACH %.2f", data.mach), px, py + 78, 20);
     }
 
-    private void drawBar(float x, float y, float w, float h,
-                         float fill, String label,
-                         float r1, float g1, float b1,
-                         float r2, float g2, float b2) {
+    private void drawMissionInfo(float x, float y, FlyByWire.FlightData data) {
+        setup2DLegado();
+
+        Mission current = missionManager.currentMission();
+
+        // Fundo do painel
+        glDisable(GL_TEXTURE_2D);
+        glColor4f(0.02f, 0.02f, 0.04f, 0.75f);
+        glBegin(GL_QUADS);
+        glVertex2f(x - 10, y - 10);
+        glVertex2f(x + 260, y - 10);
+        glVertex2f(x + 260, y + 260);
+        glVertex2f(x - 10, y + 260);
+        glEnd();
+
+        // Borda
+        float borderPulse = 0.3f + (float)(Math.sin(crtTime * 2.0) * 0.05);
+        glColor4f(0.4f, 0.42f, borderPulse + 0.3f, 0.4f);
+        glBegin(GL_LINE_LOOP);
+        glVertex2f(x - 10, y - 10);
+        glVertex2f(x + 260, y - 10);
+        glVertex2f(x + 260, y + 260);
+        glVertex2f(x - 10, y + 260);
+        glEnd();
+
+        glEnable(GL_TEXTURE_2D);
+
+        // Header
+        glColor4f(0.5f, 0.52f, 0.65f, 0.6f);
+        textRenderer.renderText("MISSION DATA", x, y, 16);
+
+        glDisable(GL_TEXTURE_2D);
+        glColor4f(0.4f, 0.42f, 0.55f, 0.3f);
+        glBegin(GL_LINES);
+        glVertex2f(x, y + 16); glVertex2f(x + 250, y + 16);
+        glEnd();
+        glEnable(GL_TEXTURE_2D);
+
+        float cy = y + 30;
+
+        if (current == null || current.getState() != Mission.State.ACTIVE) {
+            glColor4f(0.4f, 0.42f, 0.5f, 0.5f);
+            textRenderer.renderText("NO ACTIVE MISSION", x, cy, 20);
+            textRenderer.renderText("Free flight mode", x, cy + 28, 16);
+            cy += 70;
+            drawFuelEstimate(x, cy, data);
+            return;
+        }
+
+        // Nome
+        glColor4f(0.9f, 0.92f, 1f, 0.95f);
+        textRenderer.renderText(current.getName(), x, cy, 20);
+        cy += 26;
+
+        // Recon
+        if (current instanceof fbw.gameplay.MissionRecon recon) {
+            Vector3f tgt = recon.getTarget();
+            Vector3f pos = fbw.getPosicao();
+            float dx = tgt.x - pos.x;
+            float dz = tgt.z - pos.z;
+            float dist = (float)Math.sqrt(dx * dx + dz * dz);
+
+            double tgtBearing = Math.toDegrees(Math.atan2(dx, dz));
+            if (tgtBearing < 0) tgtBearing += 360;
+            double hdg = data.yaw % 360;
+            if (hdg < 0) hdg += 360;
+            double diff = tgtBearing - hdg;
+            if (diff > 180) diff -= 360;
+            if (diff < -180) diff += 360;
+
+            String dirLabel = Math.abs(diff) < 5 ? "NOSE" :
+                              diff > 0 ? String.format("R%.0f", Math.abs(diff)) :
+                              String.format("L%.0f", Math.abs(diff));
+
+            glColor4f(0.5f, 0.52f, 0.6f, 0.6f);
+            textRenderer.renderText("TGT", x, cy, 16);
+            glColor4f(0.9f, 0.7f, 0.4f, 0.9f);
+            textRenderer.renderText(String.format("%.1fkm %s", dist / 1000f, dirLabel), x + 40, cy, 16);
+            cy += 22;
+
+            // Barra de captura
+            glColor4f(0.5f, 0.52f, 0.6f, 0.6f);
+            textRenderer.renderText("CAP", x, cy, 16);
+
+            float progress = recon.getCaptureProgress();
+            float required = recon.getRequired();
+            float capturePct = Math.min(1f, progress / required);
+
+            glDisable(GL_TEXTURE_2D);
+            float barX = x + 40, barW = 170, barH = 12;
+            glColor4f(0.06f, 0.06f, 0.08f, 0.8f);
+            glBegin(GL_QUADS);
+            glVertex2f(barX, cy + 2); glVertex2f(barX + barW, cy + 2);
+            glVertex2f(barX + barW, cy + 2 + barH); glVertex2f(barX, cy + 2 + barH);
+            glEnd();
+            if (capturePct > 0) {
+                float fillW = barW * capturePct;
+                glBegin(GL_QUADS);
+                glColor4f(0.2f, 0.7f, 0.3f, 0.7f);
+                glVertex2f(barX, cy + 2); glVertex2f(barX, cy + 2 + barH);
+                glColor4f(0.3f, 0.9f, 0.4f, 0.8f);
+                glVertex2f(barX + fillW, cy + 2 + barH); glVertex2f(barX + fillW, cy + 2);
+                glEnd();
+            }
+            glColor4f(0.4f, 0.42f, 0.55f, 0.3f);
+            glBegin(GL_LINE_LOOP);
+            glVertex2f(barX, cy + 2); glVertex2f(barX + barW, cy + 2);
+            glVertex2f(barX + barW, cy + 2 + barH); glVertex2f(barX, cy + 2 + barH);
+            glEnd();
+            glEnable(GL_TEXTURE_2D);
+            glColor4f(0.8f, 0.82f, 0.9f, 0.7f);
+            textRenderer.renderText(String.format("%.0f%%", capturePct * 100), barX + barW + 6, cy, 16);
+            cy += 22;
+
+            // Speed check
+            glColor4f(0.5f, 0.52f, 0.6f, 0.6f);
+            textRenderer.renderText("SPD", x, cy, 16);
+            float minSpd = recon.getMinSpeed();
+            boolean speedOk = data.speed >= minSpd;
+            if (speedOk)
+                glColor4f(0.3f, 0.9f, 0.4f, 0.9f);
+            else
+                glColor4f(1f, 0.4f, 0.3f, 0.9f);
+            textRenderer.renderText(speedOk ? "OK" : String.format("NEED %.0f+", minSpd), x + 40, cy, 16);
+            cy += 22;
+
+        } else if (current instanceof fbw.gameplay.MissionEscape escape) {
+            glColor4f(0.5f, 0.52f, 0.6f, 0.6f);
+            textRenderer.renderText("MACH REQ", x, cy, 16);
+            float targetMach = escape.getTargetMach();
+            boolean machOk = data.mach >= targetMach;
+            if (machOk)
+                glColor4f(0.3f, 0.9f, 0.4f, 0.9f);
+            else
+                glColor4f(1f, 0.4f, 0.3f, 0.9f);
+            textRenderer.renderText(String.format("%.1f/%.1f %s",
+                data.mach, targetMach, machOk ? "OK" : "LOW"), x + 90, cy, 16);
+            cy += 22;
+
+        } else if (current instanceof fbw.gameplay.MissionFlightWindow window) {
+            glColor4f(0.5f, 0.52f, 0.6f, 0.6f);
+            textRenderer.renderText("ENVELOPE", x, cy, 16);
+            glColor4f(0.8f, 0.82f, 0.9f, 0.8f);
+            textRenderer.renderText(String.format("ALT %.0f-%.0fft",
+                window.getMinAlt(), window.getMaxAlt()), x, cy + 18, 16);
+            textRenderer.renderText(String.format("MACH %.1f-%.1f",
+                window.getMinMach(), window.getMaxMach()), x, cy + 36, 16);
+            cy += 55;
+        }
+
+        cy += 10;
+        drawFuelEstimate(x, cy, data);
+    }
+
+    private void drawFuelEstimate(float x, float y, FlyByWire.FlightData data) {
+        setup2DLegado();
+        glEnable(GL_TEXTURE_2D);
+
+        double fuel = fbw.getFuel();
+        double throttle = fbw.getThrottle();
+        double burnRate = 50.0 * (throttle / 1000.0 + 0.5); // mesma fórmula do FlyByWire
+        double secondsLeft = (burnRate > 0) ? fuel / burnRate : 99999;
+        int minsLeft = (int)(secondsLeft / 60);
+
+        glColor4f(0.5f, 0.52f, 0.6f, 0.6f);
+        textRenderer.renderText("FUEL TIME", x, y, 16);
+
+        if (minsLeft < 5)
+            glColor4f(1f, 0.3f, 0.2f, 0.9f);
+        else if (minsLeft < 15)
+            glColor4f(1f, 0.8f, 0.3f, 0.9f);
+        else
+            glColor4f(0.3f, 0.9f, 0.4f, 0.9f);
+
+        if (minsLeft > 120)
+            textRenderer.renderText(String.format("%dh %02dm", minsLeft / 60, minsLeft % 60), x + 100, y, 20);
+        else
+            textRenderer.renderText(String.format("%d min", minsLeft), x + 100, y, 20);
+    }
+    
+    private void drawModernBar(float x, float y, float w, float h,
+                               float fill, String label, boolean warning) {
         glDisable(GL_TEXTURE_2D);
         fill = Math.max(0, Math.min(1, fill));
 
         // Fundo
-        glColor3f(0.15f, 0.15f, 0.15f);
+        glColor4f(0.06f, 0.06f, 0.08f, 0.8f);
         glBegin(GL_QUADS);
         glVertex2f(x, y); glVertex2f(x + w, y);
         glVertex2f(x + w, y + h); glVertex2f(x, y + h);
         glEnd();
 
-        // Preenchimento com cor que muda conforme o nível
-        float r = r1 + (r2 - r1) * fill;
-        float g = g1 + (g2 - g1) * fill;
-        float b = b1 + (b2 - b1) * fill;
-        glColor3f(r, g, b);
-        glBegin(GL_QUADS);
-        glVertex2f(x, y); glVertex2f(x + w * fill, y);
-        glVertex2f(x + w * fill, y + h); glVertex2f(x, y + h);
+        // Borda fina
+        glColor4f(0.3f, 0.32f, 0.4f, 0.3f);
+        glBegin(GL_LINE_LOOP);
+        glVertex2f(x, y); glVertex2f(x + w, y);
+        glVertex2f(x + w, y + h); glVertex2f(x, y + h);
         glEnd();
 
+        // Preenchimento com gradiente
+        float fillW = w * fill;
+        if (warning && ((int)(crtTime * 4)) % 2 == 0) {
+            glColor4f(0.9f, 0.2f, 0.1f, 0.8f);
+        } else {
+            glBegin(GL_QUADS);
+            glColor4f(0.2f, 0.5f, 0.7f, 0.7f);
+            glVertex2f(x, y); glVertex2f(x, y + h);
+            glColor4f(0.3f + fill * 0.5f, 0.6f - fill * 0.3f, 0.8f - fill * 0.5f, 0.8f);
+            glVertex2f(x + fillW, y + h); glVertex2f(x + fillW, y);
+            glEnd();
+
+            // Highlight no topo
+            glColor4f(0.5f, 0.7f, 0.9f, 0.2f);
+            glBegin(GL_QUADS);
+            glVertex2f(x, y); glVertex2f(x + fillW, y);
+            glVertex2f(x + fillW, y + 2); glVertex2f(x, y + 2);
+            glEnd();
+        }
+
+        if (warning && ((int)(crtTime * 4)) % 2 == 0) {
+            glBegin(GL_QUADS);
+            glVertex2f(x, y); glVertex2f(x + fillW, y);
+            glVertex2f(x + fillW, y + h); glVertex2f(x, y + h);
+            glEnd();
+        }
+
+        // Label
         glEnable(GL_TEXTURE_2D);
-        glColor3f(0.8f, 0.8f, 0.8f);
-        textRenderer.renderText(label, x + w + 6, y + 2);
+        if (warning && ((int)(crtTime * 4)) % 2 == 0)
+            glColor4f(1f, 0.3f, 0.2f, 0.9f);
+        else
+            glColor4f(0.6f, 0.62f, 0.7f, 0.7f);
+        textRenderer.renderText(label, x + w + 8, y - 1, 16);
+
+        // Percentagem
+        glColor4f(0.8f, 0.82f, 0.9f, 0.6f);
+        textRenderer.renderText(String.format("%.0f%%", fill * 100), x + w - 35, y - 1, 16);
     }
 
     // ── GRÁFICO DE VELOCIDADE ─────────────────────────────────────────
@@ -1026,47 +1695,72 @@ public class FlyData {
         setup2DLegado();
         glDisable(GL_TEXTURE_2D);
 
-        float w = 200, h = 80;
+        float w = 180, h = 70;
 
         // Fundo
-        glColor3f(0.05f, 0.05f, 0.08f);
+        glColor4f(0.02f, 0.02f, 0.04f, 0.8f);
         glBegin(GL_QUADS);
         glVertex2f(x, y); glVertex2f(x + w, y);
         glVertex2f(x + w, y + h); glVertex2f(x, y + h);
         glEnd();
 
-        // Grade
-        glColor3f(0.2f, 0.2f, 0.2f);
+        // Grade sutil
+        glColor4f(0.15f, 0.15f, 0.2f, 0.2f);
         glBegin(GL_LINES);
-        glVertex2f(x,     y + h / 2); glVertex2f(x + w, y + h / 2);
-        glVertex2f(x + w / 2, y);     glVertex2f(x + w / 2, y + h);
+        for (int i = 1; i < 4; i++) {
+            float gy = y + (h / 4f) * i;
+            glVertex2f(x, gy); glVertex2f(x + w, gy);
+        }
         glEnd();
 
-        // Linha do gráfico
-        double[] hist  = fbw.getSpeedHistory();
-        int      start = fbw.getHistoryIndex();
-        glColor3f(0.2f, 0.9f, 0.5f);
+        // Área preenchida
+        double[] hist = fbw.getSpeedHistory();
+        int start = fbw.getHistoryIndex();
+        glBegin(GL_QUAD_STRIP);
+        for (int i = 0; i < 60; i++) {
+            double spd = hist[(start + i) % 60];
+            float px2 = x + (i / 59f) * w;
+            float py2 = y + h - (float)(spd / 6000.0) * h;
+            glColor4f(0.15f, 0.4f, 0.6f, 0.15f);
+            glVertex2f(px2, y + h);
+            glColor4f(0.2f, 0.5f, 0.7f, 0.25f);
+            glVertex2f(px2, py2);
+        }
+        glEnd();
+
+        // Linha
+        glColor4f(0.4f, 0.8f, 0.95f, 0.8f);
         glLineWidth(1.5f);
         glBegin(GL_LINE_STRIP);
         for (int i = 0; i < 60; i++) {
-            double spd  = hist[(start + i) % 60];
-            float  px2  = x + (i / 59f) * w;
-            float  py2  = y + h - (float)(spd / 6000.0) * h;
+            double spd = hist[(start + i) % 60];
+            float px2 = x + (i / 59f) * w;
+            float py2 = y + h - (float)(spd / 6000.0) * h;
             glVertex2f(px2, py2);
         }
         glEnd();
         glLineWidth(1f);
 
+        // Ponto atual
+        double currentSpd = hist[(start + 59) % 60];
+        float dotY = y + h - (float)(currentSpd / 6000.0) * h;
+        glColor4f(0.5f, 0.9f, 1f, 0.9f);
+        glPointSize(4f);
+        glBegin(GL_POINTS);
+        glVertex2f(x + w, dotY);
+        glEnd();
+        glPointSize(1f);
+
         // Borda
-        glColor3f(0.4f, 0.4f, 0.4f);
+        glColor4f(0.3f, 0.32f, 0.4f, 0.3f);
         glBegin(GL_LINE_LOOP);
         glVertex2f(x, y); glVertex2f(x + w, y);
         glVertex2f(x + w, y + h); glVertex2f(x, y + h);
         glEnd();
 
         glEnable(GL_TEXTURE_2D);
-        glColor3f(0.5f, 0.5f, 0.5f);
-        textRenderer.renderText("VELOCIDADE (60s)", x, y - 14);
+        glColor4f(0.5f, 0.52f, 0.65f, 0.5f);
+        textRenderer.renderText("SPEED (60s)", x, y - 14, 16);
     }
 
     // ── G-FORCE ───────────────────────────────────────────────────────
@@ -1074,29 +1768,28 @@ public class FlyData {
         setup2DLegado();
         double g = fbw.getGForce();
 
-        // Vinheta vermelha em G alto
         if (g > 4.0) {
-            float intensity = (float) Math.min((g - 4.0) / 5.0, 0.6);
+            float intensity = (float) Math.min((g - 4.0) / 5.0, 0.5);
             glDisable(GL_TEXTURE_2D);
             glColor4f(0.8f, 0f, 0f, intensity);
-            glEnable(GL_BLEND);
-
-            // Bordas da tela ficam vermelhas
             glBegin(GL_QUADS);
             glVertex2f(0, 0);    glVertex2f(1280, 0);
-            glVertex2f(1280, 80); glVertex2f(0, 80);
+            glVertex2f(1280, 60); glVertex2f(0, 60);
             glEnd();
             glBegin(GL_QUADS);
-            glVertex2f(0, 640);    glVertex2f(1280, 640);
+            glVertex2f(0, 660);    glVertex2f(1280, 660);
             glVertex2f(1280, 720); glVertex2f(0, 720);
             glEnd();
         }
 
         glEnable(GL_TEXTURE_2D);
-        float gColor = g > 5 ? 1f : (g > 3 ? 1f : 0.6f);
-        float gGreen = g > 5 ? 0f : (g > 3 ? 0.5f : 1f);
-        glColor3f(gColor, gGreen, 0f);
-        textRenderer.renderText(String.format("%.1fG", g), 620, 680);
+        if (g > 6)
+            glColor4f(1f, 0.2f, 0.2f, 1f);
+        else if (g > 4)
+            glColor4f(1f, 0.7f, 0.2f, 0.9f);
+        else
+            glColor4f(0.5f, 0.52f, 0.65f, 0.7f);
+        textRenderer.renderText(String.format("%.1fG", g), 600, 680, 24);
     }
 
     private void renderExternal() {
@@ -1216,6 +1909,8 @@ public class FlyData {
 
         shader.unbind();
 
+        renderTargetMarker();
+        
         renderSun();
         renderClouds();
 
@@ -1468,156 +2163,256 @@ public class FlyData {
         FlyByWire.FlightData data = fbw.getLastData();
         if (data == null) return;
 
-        // ── PAINEL ESQUERDO — dados de voo ────────────────────────
-        float lx = 30, ly = 30;
+        // Offset de glitch global
+        float gx = glitchOffsetX;
+        float flickerAlpha = hudFlicker ? 0.4f : 1f;
 
-        // Fundo semi-transparente
+        // ── PAINEL ESQUERDO — dados de voo ────────────────────────
+        float lx = 30 + gx, ly = 30;
+
+        // Fundo
         glDisable(GL_TEXTURE_2D);
-        glColor4f(0f, 0.02f, 0f, 0.7f);
+        glColor4f(0f, 0.02f, 0f, 0.75f * flickerAlpha);
         glBegin(GL_QUADS);
         glVertex2f(lx - 10, ly - 10);
-        glVertex2f(lx + 260, ly - 10);
-        glVertex2f(lx + 260, ly + 175);
-        glVertex2f(lx - 10, ly + 175);
+        glVertex2f(lx + 270, ly - 10);
+        glVertex2f(lx + 270, ly + 195);
+        glVertex2f(lx - 10, ly + 195);
         glEnd();
 
-        // Borda verde
-        glColor4f(0f, 0.4f, 0f, 0.6f);
+        // Borda com leve "breathing" (pulsa suavemente)
+        float borderPulse = 0.4f + (float)(Math.sin(crtTime * 2.0) * 0.1);
+        glColor4f(0f, borderPulse, 0f, 0.7f * flickerAlpha);
         glLineWidth(1f);
         glBegin(GL_LINE_LOOP);
         glVertex2f(lx - 10, ly - 10);
-        glVertex2f(lx + 260, ly - 10);
-        glVertex2f(lx + 260, ly + 175);
-        glVertex2f(lx - 10, ly + 175);
+        glVertex2f(lx + 270, ly - 10);
+        glVertex2f(lx + 270, ly + 195);
+        glVertex2f(lx - 10, ly + 195);
         glEnd();
 
         glEnable(GL_TEXTURE_2D);
 
-        // Título do painel
-        glColor3f(0f, 0.6f, 0.2f);
-        textRenderer.renderText(">> FLIGHT DATA", lx, ly);
+        // Header com cursor piscante
+        String cursor = ((int)(crtTime * 3) % 2 == 0) ? "_" : " ";
+        glColor4f(0f, 0.7f, 0.25f, flickerAlpha);
+        textRenderer.renderText(">> FLIGHT DATA" + cursor, lx, ly);
 
-        // Linha separadora
-        glColor3f(0f, 0.3f, 0f);
-        textRenderer.renderText("─────────────────────", lx, ly + 16);
+        // Separador
+        glColor4f(0f, 0.25f, 0f, flickerAlpha);
+        textRenderer.renderText("========================", lx, ly + 16);
 
-        // Altitude
-        glColor3f(0f, 0.9f, 0.3f);
-        textRenderer.renderText(String.format("ALT   %,.0f ft", data.altitude), lx, ly + 35);
+        // Altitude — pisca vermelho se muito baixo
+        boolean altWarn = data.altitude < 5000;
+        if (altWarn && ((int)(crtTime * 5)) % 2 == 0)
+            glColor4f(1f, 0.2f, 0.1f, flickerAlpha);
+        else
+            glColor4f(0f, 0.9f, 0.3f, flickerAlpha);
+        textRenderer.renderText(String.format("ALT  %,8.0f ft", data.altitude), lx, ly + 35);
 
         // Velocidade
-        glColor3f(0f, 0.9f, 0.3f);
-        textRenderer.renderText(String.format("SPD   %,.0f km/h", data.speed * 3.6), lx, ly + 55);
+        glColor4f(0f, 0.9f, 0.3f, flickerAlpha);
+        textRenderer.renderText(String.format("SPD  %,8.0f kh", data.speed * 3.6), lx, ly + 55);
 
-        // Mach com destaque
-        float machColor = data.mach > 3.0f ? 1f : 0f;
-        glColor3f(machColor, 1f, 0.3f);
-        textRenderer.renderText(String.format("MACH  %.2f", data.mach), lx, ly + 75);
+        // Mach — cor muda progressivamente
+        float machPct = (float) Math.min(data.mach / 3.5, 1.0);
+        glColor4f(machPct, 1f - machPct * 0.3f, 0.3f - machPct * 0.3f, flickerAlpha);
+        textRenderer.renderText(String.format("MACH    %.2f", data.mach), lx, ly + 75);
 
-        // Heading
-        glColor3f(0f, 0.7f, 0.3f);
+        // Heading com indicador de direção
         double heading = data.yaw % 360;
         if (heading < 0) heading += 360;
-        textRenderer.renderText(String.format("HDG   %03.0f°", heading), lx, ly + 95);
+        String dir = getCompassDir(heading);
+        glColor4f(0f, 0.7f, 0.3f, flickerAlpha);
+        textRenderer.renderText(String.format("HDG  %03.0f %s", heading, dir), lx, ly + 95);
 
-        // Pitch e Roll
-        glColor3f(0f, 0.6f, 0.25f);
-        textRenderer.renderText(String.format("PIT   %+.1f°", data.pitch), lx, ly + 115);
-        textRenderer.renderText(String.format("BNK   %+.1f°", data.roll), lx, ly + 135);
+        // Pitch e Bank
+        glColor4f(0f, 0.55f, 0.25f, flickerAlpha);
+        textRenderer.renderText(String.format("PIT   %+6.1f deg", data.pitch), lx, ly + 115);
+        textRenderer.renderText(String.format("BNK   %+6.1f deg", data.roll), lx, ly + 135);
 
-        // Throttle %
+        // Throttle com barra visual
         double thrPct = (fbw.getThrottle() / 6000.0) * 100.0;
-        glColor3f(0f, 0.6f, 0.25f);
-        textRenderer.renderText(String.format("THR   %.0f%%", thrPct), lx, ly + 155);
-        
-        glColor3f(0.3f, 0.3f, 0.3f);
-        textRenderer.renderText(String.format("FPS: %.0f", 1.0f / lastDelta), 1200, 710);
+        glColor4f(0f, 0.55f, 0.25f, flickerAlpha);
+        textRenderer.renderText(String.format("THR   %5.0f%%", thrPct), lx, ly + 155);
+
+        // Barra de throttle inline
+        glDisable(GL_TEXTURE_2D);
+        float barX = lx + 160, barW = 100, barH = 10, barY2 = ly + 157;
+        glColor4f(0.1f, 0.15f, 0.1f, flickerAlpha);
+        glBegin(GL_QUADS);
+        glVertex2f(barX, barY2); glVertex2f(barX + barW, barY2);
+        glVertex2f(barX + barW, barY2 + barH); glVertex2f(barX, barY2 + barH);
+        glEnd();
+        glColor4f(0f, 0.8f, 0.3f, flickerAlpha);
+        float fillW = barW * (float)(thrPct / 100.0);
+        glBegin(GL_QUADS);
+        glVertex2f(barX, barY2); glVertex2f(barX + fillW, barY2);
+        glVertex2f(barX + fillW, barY2 + barH); glVertex2f(barX, barY2 + barH);
+        glEnd();
+        glEnable(GL_TEXTURE_2D);
+
+        // Timestamp fake
+        glColor4f(0f, 0.3f, 0.12f, flickerAlpha * 0.6f);
+        int secs = (int)(crtTime) % 60;
+        int mins = ((int)(crtTime) / 60) % 60;
+        textRenderer.renderText(String.format("REC %02d:%02d", mins, secs), lx, ly + 178);
 
         // ── PAINEL DIREITO — sistemas ─────────────────────────────
-        float rx = 1010, ry = 30;
+        float rx = 1010 + gx, ry = 30;
 
         glDisable(GL_TEXTURE_2D);
-        glColor4f(0f, 0.02f, 0f, 0.7f);
+        glColor4f(0f, 0.02f, 0f, 0.75f * flickerAlpha);
         glBegin(GL_QUADS);
         glVertex2f(rx - 10, ry - 10);
         glVertex2f(rx + 270, ry - 10);
-        glVertex2f(rx + 270, ry + 115);
-        glVertex2f(rx - 10, ry + 115);
+        glVertex2f(rx + 270, ry + 135);
+        glVertex2f(rx - 10, ry + 135);
         glEnd();
 
-        glColor4f(0f, 0.4f, 0f, 0.6f);
+        glColor4f(0f, borderPulse, 0f, 0.7f * flickerAlpha);
         glBegin(GL_LINE_LOOP);
         glVertex2f(rx - 10, ry - 10);
         glVertex2f(rx + 270, ry - 10);
-        glVertex2f(rx + 270, ry + 115);
-        glVertex2f(rx - 10, ry + 115);
+        glVertex2f(rx + 270, ry + 135);
+        glVertex2f(rx - 10, ry + 135);
         glEnd();
-
         glEnable(GL_TEXTURE_2D);
 
-        glColor3f(0f, 0.6f, 0.2f);
-        textRenderer.renderText(">> SYSTEMS", rx, ry);
-        glColor3f(0f, 0.3f, 0f);
-        textRenderer.renderText("─────────────────────", rx, ry + 16);
+        glColor4f(0f, 0.7f, 0.25f, flickerAlpha);
+        textRenderer.renderText(">> SYSTEMS" + cursor, rx, ry);
+        glColor4f(0f, 0.25f, 0f, flickerAlpha);
+        textRenderer.renderText("========================", rx, ry + 16);
 
-        // Engine temp com alerta
+        // Engine temp
         double temp = fbw.getEngineTemp();
-        if (temp > 80) glColor3f(1f, 0.2f, 0.1f);
-        else glColor3f(0f, 0.7f, 0.3f);
-        textRenderer.renderText(String.format("ENG   %.0f°C %s", temp, temp > 80 ? "WARN" : "OK"), rx, ry + 35);
+        boolean tempWarn = temp > 80;
+        if (tempWarn && ((int)(crtTime * 4)) % 2 == 0)
+            glColor4f(1f, 0.2f, 0.1f, flickerAlpha);
+        else
+            glColor4f(0f, 0.7f, 0.3f, flickerAlpha);
+        String tempStatus = temp > 90 ? "CRIT" : temp > 80 ? "WARN" : "NORM";
+        textRenderer.renderText(String.format("ENG  %4.0fC [%s]", temp, tempStatus), rx, ry + 35);
 
         // Fuel
         double fuelPct = (fbw.getFuel() / 100000.0) * 100.0;
-        if (fuelPct < 20) glColor3f(1f, 0.3f, 0f);
-        else glColor3f(0f, 0.7f, 0.3f);
-        textRenderer.renderText(String.format("FUEL  %.0f%%  [%.0f L]", fuelPct, fbw.getFuel()), rx, ry + 55);
+        boolean fuelWarn = fuelPct < 20;
+        if (fuelWarn && ((int)(crtTime * 3)) % 2 == 0)
+            glColor4f(1f, 0.3f, 0f, flickerAlpha);
+        else
+            glColor4f(0f, 0.7f, 0.3f, flickerAlpha);
+        textRenderer.renderText(String.format("FUEL %4.0f%%  %,.0fL", fuelPct, fbw.getFuel()), rx, ry + 55);
 
-        // G-force com alerta visual
+        // G-force com alerta visual progressivo
         double g = fbw.getGForce();
-        if (g > 5) glColor3f(1f, 0f, 0f);
-        else if (g > 3) glColor3f(1f, 0.8f, 0f);
-        else glColor3f(0f, 0.7f, 0.3f);
-        textRenderer.renderText(String.format("G     %+.1f", g), rx, ry + 75);
+        String gWarn = g > 7 ? " !!LIMIT!!" : g > 5 ? " !CAUTION!" : g > 3 ? " *HIGH*" : "";
+        if (g > 5) glColor4f(1f, 0f, 0f, flickerAlpha);
+        else if (g > 3) glColor4f(1f, 0.8f, 0f, flickerAlpha);
+        else glColor4f(0f, 0.7f, 0.3f, flickerAlpha);
+        textRenderer.renderText(String.format("G   %+5.1f%s", g, gWarn), rx, ry + 75);
 
         // Posição
-        glColor3f(0f, 0.5f, 0.2f);
-        textRenderer.renderText(String.format("POS   X:%.0f Z:%.0f",
-            fbw.getPosicao().x, fbw.getPosicao().z), rx, ry + 95);
+        glColor4f(0f, 0.45f, 0.2f, flickerAlpha);
+        textRenderer.renderText(String.format("LAT  %+.0f", fbw.getPosicao().x), rx, ry + 95);
+        textRenderer.renderText(String.format("LON  %+.0f", fbw.getPosicao().z), rx, ry + 115);
 
-        // ── ALERTA DE MÍSSIL ──────────────────────────────────────
+        // ── ALERTA DE MÍSSIL — mais agressivo ─────────────────────
         if (enemy.isMissileWarning()) {
-            // Pisca com o crtTime
-            boolean blink = ((int)(crtTime * 4)) % 2 == 0;
+            boolean blink = ((int)(crtTime * 6)) % 2 == 0;
             if (blink) {
                 glDisable(GL_TEXTURE_2D);
-                glColor4f(0.8f, 0f, 0f, 0.9f);
+                glColor4f(0.9f, 0f, 0f, 0.95f);
                 glBegin(GL_QUADS);
-                glVertex2f(400, 0); glVertex2f(880, 0);
-                glVertex2f(880, 32); glVertex2f(400, 32);
+                glVertex2f(350, 0); glVertex2f(930, 0);
+                glVertex2f(930, 35); glVertex2f(350, 35);
                 glEnd();
                 glEnable(GL_TEXTURE_2D);
                 glColor3f(1f, 1f, 1f);
-                textRenderer.renderText("!! MISSILE INCOMING — S TO DEPLOY !!", 418, 10);
+                textRenderer.renderText(">>> MISSILE WARNING — [S] COUNTERMEASURE <<<", 365, 10);
             }
+            // Linha de glitch extra durante alerta
+            glDisable(GL_TEXTURE_2D);
+            float missileGlitch = (float)(Math.random() * 720);
+            glColor4f(1f, 0f, 0f, 0.15f);
+            glBegin(GL_QUADS);
+            glVertex2f(0, missileGlitch); glVertex2f(1280, missileGlitch);
+            glVertex2f(1280, missileGlitch + 3); glVertex2f(0, missileGlitch + 3);
+            glEnd();
+            glEnable(GL_TEXTURE_2D);
         }
 
         // ── MISSÃO ATIVA ──────────────────────────────────────────
         Mission current = missionManager.currentMission();
         if (current != null && current.getState() == Mission.State.ACTIVE) {
-            glColor3f(0f, 0.8f, 0.3f);
+            glColor4f(0f, 0.9f, 0.35f, flickerAlpha);
             textRenderer.renderText("> " + current.getHudStatus(), 400, 690);
         }
 
         // ── CLIMA ─────────────────────────────────────────────────
         String weatherLabel = weather.getHudLabel();
         if (!weatherLabel.isEmpty()) {
-            glColor3f(0.8f, 0.5f, 0f);
+            glColor4f(0.8f, 0.5f, 0f, flickerAlpha);
             textRenderer.renderText("WX: " + weatherLabel, 400, 670);
         }
 
         // ── RODAPÉ ────────────────────────────────────────────────
-        glColor3f(0f, 0.3f, 0.15f);
-        textRenderer.renderText("N=Missoes  E=Cockpit  F=Camera  M=Mapa  W/Q=Throttle", 300, 710);
+        glColor4f(0f, 0.25f, 0.12f, 0.6f);
+        textRenderer.renderText("E=View  F=Recon  M=Map  W/Q=Throttle  ESC=Pause", 320, 710);
+
+        // FPS
+        glColor4f(0f, 0.2f, 0.1f, 0.5f);
+        textRenderer.renderText(String.format("%.0f FPS", 1.0f / lastDelta), 1200, 710);
+        
+        Mission mCurrent = missionManager.currentMission();
+        if (mCurrent instanceof fbw.gameplay.MissionRecon recon && 
+            mCurrent.getState() == Mission.State.ACTIVE) {
+            
+            Vector3f tgt = recon.getTarget();
+            Vector3f pos = fbw.getPosicao();
+            FlyByWire.FlightData fd = fbw.getLastData();
+            
+            float dx = tgt.x - pos.x;
+            float dz = tgt.z - pos.z;
+            float dist = (float)Math.sqrt(dx*dx + dz*dz);
+            
+            // Ângulo pro alvo vs heading atual
+            double tgtBearing = Math.toDegrees(Math.atan2(dx, dz));
+            if (tgtBearing < 0) tgtBearing += 360;
+            double hdg = fd.yaw % 360;
+            if (hdg < 0) hdg += 360;
+            double diff = tgtBearing - hdg;
+            if (diff > 180) diff -= 360;
+            if (diff < -180) diff += 360;
+            
+            // Seta indicadora no centro-topo da tela
+            float arrowX = 640 + (float)(diff / 180.0 * 300);  // mapeia ±180° pra ±300px
+            arrowX = Math.max(200, Math.min(1080, arrowX));
+            
+            glDisable(GL_TEXTURE_2D);
+            float tPulse = 0.7f + (float)(Math.sin(crtTime * 4) * 0.3);
+            glColor4f(1f, 0.3f, 0.2f, tPulse);
+            
+            // Triângulo apontando pra baixo
+            glBegin(GL_TRIANGLES);
+            glVertex2f(arrowX, 45);
+            glVertex2f(arrowX - 8, 35);
+            glVertex2f(arrowX + 8, 35);
+            glEnd();
+            
+            glEnable(GL_TEXTURE_2D);
+            glColor4f(1f, 0.4f, 0.3f, tPulse);
+            textRenderer.renderText(String.format("TGT %.0fkm %s", 
+                dist / 1000f,
+                Math.abs(diff) < 5 ? "ON NOSE" : 
+                diff > 0 ? "RIGHT" : "LEFT"), arrowX - 40, 50);
+        }
+    }
+
+    private String getCompassDir(double heading) {
+        String[] dirs = {"N","NNE","NE","ENE","E","ESE","SE","SSE",
+                         "S","SSW","SW","WSW","W","WNW","NW","NNW"};
+        int idx = (int)((heading + 11.25) / 22.5) % 16;
+        return dirs[idx];
     }
 
     private void drawPlayer() {
@@ -1834,8 +2629,8 @@ public class FlyData {
         Mission m = missionManager.currentMission();
         stats.begin(m != null ? m.getName() : "Voo Livre");
         startGameplay();
-        currentScreen = Screen.EXTERNAL;
-    }
+        transitionTo(Screen.EXTERNAL);    
+        }
     
     private void checkTerrainCollision() {
         if (fbw.isDead()) return;
@@ -1893,16 +2688,9 @@ public class FlyData {
     }
     
     private void renderIntro(float delta) {
-//        if (!introMusicStarted) {
-//            audio.playSound("/audio/audioox.wav"); // exporta o áudio da edit como WAV
-//            introMusicStarted = true;
-//        }
-        
         introTimer += delta;
-        introCamAngle += delta * 18f; // câmera orbita lentamente
 
-        // Pula após 8 segundos ou se skipado
-        if (introTimer >= 8f || introSkipped) {
+        if (introTimer >= 10f || introSkipped) {
             audio.stopSound();
             introMusicStarted = false;
             currentScreen  = Screen.MAIN_MENU;
@@ -1911,236 +2699,588 @@ public class FlyData {
             return;
         }
 
-        // Fundo escuro (amanhecer)
-        float dayBlend = Math.min(introTimer / 6f, 1f);
-        glClearColor(
-            0.02f + dayBlend * 0.51f,
-            0.02f + dayBlend * 0.79f,
-            0.05f + dayBlend * 0.87f,
-            1f
-        );
-        glEnable(GL_DEPTH_TEST);
-
-        // Câmera orbita o avião
-        Vector3f origin = new Vector3f(0, 0, 0);
-        float camX = (float)(Math.cos(Math.toRadians(introCamAngle)) * 20f);
-        float camZ = (float)(Math.sin(Math.toRadians(introCamAngle)) * 20f);
-        camera.setIntroCam(new Vector3f(camX, 4f, camZ), origin);
-
-        Matrix4f modelMatrix = new Matrix4f()
-            .translate(0f, 0f, 0f)
-            .rotateX((float)Math.toRadians(0))
-            .rotateZ((float)Math.toRadians(0))
-            .scale(12.0f);
-
-        shader.bind();
-        shader.setUniformMatrix4f("projection", camera.getProjectionMatrix());
-        shader.setUniformMatrix4f("view",       camera.getViewMatrix());
-        shader.setUniformMatrix4f("model",      modelMatrix);
-        shader.setUniform1i("useTexture",  0);
-        shader.setUniform1i("useTerrain",  0);
-        shader.setUniform3f("objectColor", 0.12f, 0.12f, 0.12f);
-        shader.setUniform3f("lightDir",   -0.5f, -1.0f, -0.3f);
-        shader.setUniform3f("lightColor",  1.0f,  0.95f, 0.8f);
-        shader.setUniform3f("skyColor",    0.02f + dayBlend * 0.51f,
-                                           0.02f + dayBlend * 0.79f,
-                                           0.05f + dayBlend * 0.87f);
-        shader.setUniform3f("viewPos",     camX, 4f, camZ);
-        shader.setUniform3f("rimColor",    0.4f, 0.6f, 1.0f);
-        shader.setUniformFloat("rimStrength", 0.8f);
-        shader.setUniformFloat("fogDensity",  0.0f);
-        shader.setUniform3f("emissiveColor", 0f, 0f, 0f);
-        shader.setUniformFloat("emissiveStrength", 0f);
-        
-        shader.setUniform3f("sunDir", 0.4f, 0.8f, 0.3f);
-        
-        for (Model m : models) m.render();
-        shader.unbind();
-
-        // Textos cinemáticos com fade
         setup2DLegado();
+        glClearColor(0f, 0f, 0f, 1f);
+
+        float t = introTimer;
+
+        // ── IMAGENS SEQUENCIAIS com fade ─────────────────────────
+        glEnable(GL_TEXTURE_2D);
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+        // 3 imagens: pilotos (0-3s), takeoff (3-6s), em voo (6-10s)
+        int[] introImages = { texCrews, texTakeoff, texSR71One };
+        float[] starts = { 0f, 3.3f, 6.6f };
+        float imgDuration = 3.3f;
+        float imgFade = 1.2f;
+
+        for (int i = 0; i < introImages.length; i++) {
+            float localT = t - starts[i];
+            if (localT < 0 || localT > imgDuration) continue;
+
+            float alpha;
+            if (localT < imgFade)
+                alpha = localT / imgFade;
+            else if (localT > imgDuration - imgFade)
+                alpha = (imgDuration - localT) / imgFade;
+            else
+                alpha = 1f;
+            alpha *= 0.35f;
+
+            // Ken Burns
+            float zoom = 1.05f + (localT / imgDuration) * 0.05f;
+            float panX = (float)(Math.sin(i * 2.3 + localT * 0.08) * 30);
+            float panY = (float)(Math.cos(i * 1.7 + localT * 0.05) * 20);
+            float imgW = 1280 * zoom;
+            float imgH = 720 * zoom;
+            float ix = (1280 - imgW) / 2 + panX;
+            float iy = (720 - imgH) / 2 + panY;
+
+            glColor4f(0.7f, 0.72f, 0.85f, alpha);
+            glBindTexture(GL_TEXTURE_2D, introImages[i]);
+            glBegin(GL_QUADS);
+            glTexCoord2f(0, 0); glVertex2f(ix, iy);
+            glTexCoord2f(1, 0); glVertex2f(ix + imgW, iy);
+            glTexCoord2f(1, 1); glVertex2f(ix + imgW, iy + imgH);
+            glTexCoord2f(0, 1); glVertex2f(ix, iy + imgH);
+            glEnd();
+            glBindTexture(GL_TEXTURE_2D, 0);
+        }
+
+        // ── GRADIENTES ───────────────────────────────────────────
+        glDisable(GL_TEXTURE_2D);
+
+        glBegin(GL_QUADS);
+        glColor4f(0f, 0f, 0f, 0.7f);
+        glVertex2f(0, 0); glVertex2f(1280, 0);
+        glColor4f(0f, 0f, 0f, 0.1f);
+        glVertex2f(1280, 200); glVertex2f(0, 200);
+        glEnd();
+
+        glBegin(GL_QUADS);
+        glColor4f(0f, 0f, 0f, 0.1f);
+        glVertex2f(0, 520); glVertex2f(1280, 520);
+        glColor4f(0f, 0f, 0f, 0.85f);
+        glVertex2f(1280, 720); glVertex2f(0, 720);
+        glEnd();
+
+        // ── PARTÍCULAS ───────────────────────────────────────────
+        glPointSize(1.5f);
+        glBegin(GL_POINTS);
+        for (int i = 0; i < 40; i++) {
+            float sx = (float)(Math.sin(i * 127.1) * 0.5 + 0.5) * 1280;
+            float sy = ((float)(Math.cos(i * 311.7) * 0.5 + 0.5) * 720 - t * (2 + i % 6));
+            sy = ((sy % 780) + 780) % 780 - 30;
+            float sa = (float)(Math.sin(t * 0.8 + i * 0.5) * 0.5 + 0.5) * 0.12f;
+            glColor4f(0.7f, 0.72f, 0.9f, sa);
+            glVertex2f(sx, sy);
+        }
+        glEnd();
+        glPointSize(1f);
+
+        // ── TEXTOS CINEMÁTICOS ───────────────────────────────────
         glEnable(GL_TEXTURE_2D);
 
-        // Título aparece após 1s
-        if (introTimer > 1f) {
-            float a = Math.min((introTimer - 1f) / 1.5f, 1f);
-            glColor4f(1f, 1f, 1f, a);
-            textRenderer.renderText("SR-71  BLACKBIRD", 430, 580);
-        }
-        // Subtítulo
-        if (introTimer > 2.5f) {
-            float a = Math.min((introTimer - 2.5f) / 1f, 1f);
-            glColor4f(0.6f, 0.6f, 0.6f, a);
-            textRenderer.renderText("Classified. Untouchable. Unstoppable.", 370, 610);
+        // Frase 1: aparece em 1s
+        if (t > 1f) {
+            float a = Math.min((t - 1f) / 1.5f, 1f);
+            if (t > 4f) a = Math.max(0, 1f - (t - 4f) / 1f);
+            glColor4f(0.5f, 0.52f, 0.65f, a * 0.7f);
+            textRenderer.renderText("LOCKHEED SKUNK WORKS // 1964", 440, 300, 16);
         }
 
-        glColor3f(0.4f, 0.4f, 0.4f);
-        textRenderer.renderText("SPACE para pular", 560, 700);
-        glColor3f(1f, 1f, 1f);
+        // Título: aparece em 3s
+        if (t > 3f) {
+            float a = Math.min((t - 3f) / 1.5f, 1f);
+            // Sombra
+            glColor4f(0f, 0f, 0f, a * 0.4f);
+            textRenderer.renderText("SR-71", 442, 342, 64);
+            // Principal
+            glColor4f(1f, 1f, 1f, a);
+            textRenderer.renderText("SR-71", 440, 340, 64);
+        }
+
+        // BLACKBIRD: aparece em 4s
+        if (t > 4f) {
+            float a = Math.min((t - 4f) / 1.5f, 1f);
+            glColor4f(0.85f, 0.88f, 0.95f, a * 0.9f);
+            textRenderer.renderText("BLACKBIRD", 442, 390, 32);
+        }
+
+        // Subtítulo: aparece em 5.5s
+        if (t > 5.5f) {
+            float a = Math.min((t - 5.5f) / 1.5f, 1f);
+            glColor4f(0.55f, 0.58f, 0.7f, a * 0.7f);
+            textRenderer.renderText("Classified. Untouchable. Unstoppable.", 400, 440, 16);
+        }
+
+        // Skip
+        if (t > 2f) {
+            float skipAlpha = 0.25f + (float)(Math.sin(t * 2) * 0.1);
+            glColor4f(0.4f, 0.4f, 0.45f, skipAlpha);
+            textRenderer.renderText("SPACE to skip", 570, 690, 16);
+        }
+
+        // Barras finas
+        glDisable(GL_TEXTURE_2D);
+        glColor4f(0.6f, 0.62f, 0.75f, 0.2f);
+        glBegin(GL_QUADS);
+        glVertex2f(0, 0); glVertex2f(1280, 0);
+        glVertex2f(1280, 1); glVertex2f(0, 1);
+        glEnd();
+        glBegin(GL_QUADS);
+        glVertex2f(0, 719); glVertex2f(1280, 719);
+        glVertex2f(1280, 720); glVertex2f(0, 720);
+        glEnd();
+
+        drawCRTOverlay();
     }
     
     private void renderMainMenu() {
-        introCamAngle += 0.3f; // rotação lenta constante
-
-        // Fundo com SR-71 girando
-        glClearColor(0.02f, 0.02f, 0.04f, 1f);
-        glEnable(GL_DEPTH_TEST);
-
-        Vector3f origin = new Vector3f(0, 0, 0);
-        float camX = (float)(Math.cos(Math.toRadians(introCamAngle)) * 22f);
-        float camZ = (float)(Math.sin(Math.toRadians(introCamAngle)) * 22f);
-        camera.setIntroCam(new Vector3f(camX, 5f, camZ), origin);
-
-        Matrix4f modelMatrix = new Matrix4f()
-        	.rotateX((float)Math.toRadians(0))
-        	.rotateZ((float)Math.toRadians(0))
-            .scale(8.0f);
-
-        shader.bind();
-        shader.setUniformMatrix4f("projection", camera.getProjectionMatrix());
-        shader.setUniformMatrix4f("view",       camera.getViewMatrix());
-        shader.setUniformMatrix4f("model",      modelMatrix);
-        shader.setUniform1i("useTexture",  0);
-        shader.setUniform1i("useTerrain",  0);
-        shader.setUniform3f("objectColor", 0.12f, 0.12f, 0.14f);
-        shader.setUniform3f("lightDir",   -0.4f, -1.0f, -0.2f);
-        shader.setUniform3f("lightColor",  1.0f,  0.95f, 0.8f);
-        shader.setUniform3f("skyColor",    0.02f, 0.02f, 0.04f);
-        shader.setUniform3f("viewPos",     camX,  5f,    camZ);
-        shader.setUniform3f("rimColor",    0.3f,  0.5f,  1.0f);
-        shader.setUniformFloat("rimStrength",     0.9f);
-        shader.setUniformFloat("fogDensity",      0.0f);
-        shader.setUniform3f("emissiveColor",      0f, 0f, 0f);
-        shader.setUniformFloat("emissiveStrength", 0f);
-        shader.setUniform3f("sunDir", 0.4f, 0.8f, 0.3f);
-        
-        for (Model m : models) m.render();
-        shader.unbind();
-
-        // Resto do menu 2D por cima (overlay escuro + textos)
         setup2DLegado();
-        glDisable(GL_TEXTURE_2D);
-        glColor4f(0f, 0f, 0f, 0.55f);
-        glBegin(GL_QUADS);
-        glVertex2f(0,0); glVertex2f(360,0);
-        glVertex2f(360,720); glVertex2f(0,720);
-        glEnd();
+        glClearColor(0f, 0f, 0f, 1f);
 
-        glColor3f(0.6f, 0.05f, 0.05f);
-        glLineWidth(2f);
-        glBegin(GL_LINES);
-        glVertex2f(360, 0); glVertex2f(360, 720);
-        glEnd();
-        glLineWidth(1f);
+        float t = crtTime;
+        menuBarY += (menuBarTargetY - menuBarY) * 0.1f;
+        menuBarAlpha = Math.min(1f, menuBarAlpha + 0.02f);
 
+        // ══════════════════════════════════════════════════════════
+        // IMAGENS DE FUNDO — todas as fotos em crossfade
+        // ══════════════════════════════════════════════════════════
         glEnable(GL_TEXTURE_2D);
-        glColor3f(1f, 1f, 1f);
-        textRenderer.renderText("SR-71  BLACKBIRD", 40, 120);
-        glColor3f(0.4f, 0.4f, 0.4f);
-        textRenderer.renderText("────────────────────", 40, 145);
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
-        String[] opcoes = { "JOGAR", "MISSOES", "OPCOES", "EXTRAS", "SAIR" };
+        int[] bgTextures = {
+            texPilots, texTakeoff, texSR71One, texMD11,
+            texWeaver, texGilliland, texMarta, texCrews,
+            texPilot23, rsoTextureId, backgroundTextureId
+        };
+
+        float cycleDuration = 5f;   // cada foto fica 5s
+        float fadeDuration  = 1.5f; // fade in/out de 1.5s
+        float blackGap      = 0.5f; // meio segundo de preto entre fotos
+        float totalCycle    = cycleDuration + blackGap;
+
+        int currentImg = ((int)(t / totalCycle)) % bgTextures.length;
+        float cycleProgress = (t % totalCycle);
+
+        // Alpha: fade in, segura, fade out, preto
+        float imgAlpha = 0f;
+        if (cycleProgress < fadeDuration) {
+            imgAlpha = cycleProgress / fadeDuration;           // fade in
+        } else if (cycleProgress < cycleDuration - fadeDuration) {
+            imgAlpha = 1f;                                      // segura
+        } else if (cycleProgress < cycleDuration) {
+            imgAlpha = (cycleDuration - cycleProgress) / fadeDuration; // fade out
+        } else {
+            imgAlpha = 0f;                                      // gap preto
+        }
+        imgAlpha *= 0.3f;
+
+        // Ken Burns — zoom lento + pan suave
+        float zoom = 1.05f + (cycleProgress / cycleDuration) * 0.04f;
+        float panX = (float)(Math.sin(t * 0.06 + currentImg * 1.5) * 35);
+        float panY = (float)(Math.cos(t * 0.04 + currentImg * 2.1) * 20);
+
+        if (imgAlpha > 0.001f) {
+            // Calcula tamanho mantendo a imagem centralizada sem esticar demais
+            float imgW = 1280 * zoom;
+            float imgH = 720 * zoom;
+            float imgX = (1280 - imgW) / 2 + panX;
+            float imgY = (720 - imgH) / 2 + panY;
+
+            glColor4f(0.75f, 0.78f, 0.9f, imgAlpha);
+            glBindTexture(GL_TEXTURE_2D, bgTextures[currentImg]);
+            glBegin(GL_QUADS);
+            glTexCoord2f(0, 0); glVertex2f(imgX, imgY);
+            glTexCoord2f(1, 0); glVertex2f(imgX + imgW, imgY);
+            glTexCoord2f(1, 1); glVertex2f(imgX + imgW, imgY + imgH);
+            glTexCoord2f(0, 1); glVertex2f(imgX, imgY + imgH);
+            glEnd();
+            glBindTexture(GL_TEXTURE_2D, 0);
+        }
+
+        // ══════════════════════════════════════════════════════════
+        // GRADIENTES — moldura escura
+        // ══════════════════════════════════════════════════════════
+        glDisable(GL_TEXTURE_2D);
+
+        // Topo
+        glBegin(GL_QUADS);
+        glColor4f(0f, 0f, 0f, 0.7f);
+        glVertex2f(0, 0); glVertex2f(1280, 0);
+        glColor4f(0f, 0f, 0f, 0.2f);
+        glVertex2f(1280, 180); glVertex2f(0, 180);
+        glEnd();
+
+        // Bottom
+        glBegin(GL_QUADS);
+        glColor4f(0f, 0f, 0f, 0.2f);
+        glVertex2f(0, 540); glVertex2f(1280, 540);
+        glColor4f(0f, 0f, 0f, 0.75f);
+        glVertex2f(1280, 720); glVertex2f(0, 720);
+        glEnd();
+
+        // Esquerda
+        glBegin(GL_QUADS);
+        glColor4f(0f, 0f, 0f, 0.8f);
+        glVertex2f(0, 0); glVertex2f(0, 720);
+        glColor4f(0f, 0f, 0f, 0.1f);
+        glVertex2f(350, 720); glVertex2f(350, 0);
+        glEnd();
+
+        // Direita
+        glBegin(GL_QUADS);
+        glColor4f(0f, 0f, 0f, 0.0f);
+        glVertex2f(1000, 0); glVertex2f(1000, 720);
+        glColor4f(0f, 0f, 0f, 0.4f);
+        glVertex2f(1280, 720); glVertex2f(1280, 0);
+        glEnd();
+
+        // ══════════════════════════════════════════════════════════
+        // PARTÍCULAS — poeira flutuando
+        // ══════════════════════════════════════════════════════════
+        glPointSize(1.5f);
+        glBegin(GL_POINTS);
+        for (int i = 0; i < 50; i++) {
+            float sx = (float)(Math.sin(i * 127.1) * 0.5 + 0.5) * 1280;
+            float sy = ((float)(Math.cos(i * 311.7) * 0.5 + 0.5) * 720 - t * (3 + i % 8));
+            sy = ((sy % 780) + 780) % 780 - 30;
+            float sa = (float)(Math.sin(t * 0.8 + i * 0.5) * 0.5 + 0.5) * 0.2f;
+            if (i % 3 == 0)
+                glColor4f(0.8f, 0.82f, 1f, sa);
+            else
+                glColor4f(0.6f, 0.6f, 0.7f, sa * 0.6f);
+            glVertex2f(sx, sy);
+        }
+        glEnd();
+        glPointSize(1f);
+
+        // ══════════════════════════════════════════════════════════
+        // LINHA HORIZONTAL
+        // ══════════════════════════════════════════════════════════
+        float lineAlpha = 0.2f + (float)(Math.sin(t * 1.5) * 0.05);
+        glColor4f(0.7f, 0.72f, 0.85f, lineAlpha);
+        glBegin(GL_QUADS);
+        glVertex2f(40, 355); glVertex2f(1240, 355);
+        glVertex2f(1240, 356); glVertex2f(40, 356);
+        glEnd();
+
+        // ══════════════════════════════════════════════════════════
+        // TÍTULO
+        // ══════════════════════════════════════════════════════════
+        glEnable(GL_TEXTURE_2D);
+
+        glColor4f(0f, 0f, 0f, 0.4f);
+        textRenderer.renderText("SR-71", 44, 288, 64);
+        glColor4f(1f, 1f, 1f, 1f);
+        textRenderer.renderText("SR-71", 40, 284, 64);
+
+        glColor4f(0.9f, 0.92f, 1f, 0.95f);
+        textRenderer.renderText("BLACKBIRD", 42, 332, 32);
+
+        // Linha sob o título
+        glDisable(GL_TEXTURE_2D);
+        float titleLineW = Math.min(220, t * 160);
+        glColor4f(0.7f, 0.72f, 0.85f, 0.6f);
+        glBegin(GL_QUADS);
+        glVertex2f(42, 354); glVertex2f(42 + titleLineW, 354);
+        glVertex2f(42 + titleLineW, 355); glVertex2f(42, 355);
+        glEnd();
+
+        // ══════════════════════════════════════════════════════════
+        // BARRA DE SELEÇÃO
+        // ══════════════════════════════════════════════════════════
+        float barTop = menuBarY - 6;
+        float barBot = menuBarY + 30;
+
+        glColor4f(0.5f, 0.52f, 0.7f, 0.12f * menuBarAlpha);
+        glBegin(GL_QUADS);
+        glVertex2f(30, barTop - 8);
+        glVertex2f(320, barTop - 8);
+        glVertex2f(320, barBot + 8);
+        glVertex2f(30, barBot + 8);
+        glEnd();
+
+        glColor4f(0.85f, 0.88f, 1f, 1f * menuBarAlpha);
+        glBegin(GL_QUADS);
+        glVertex2f(34, barTop + 2);
+        glVertex2f(37, barTop + 2);
+        glVertex2f(37, barBot - 2);
+        glVertex2f(34, barBot - 2);
+        glEnd();
+
+        // ══════════════════════════════════════════════════════════
+        // OPÇÕES
+        // ══════════════════════════════════════════════════════════
+        glEnable(GL_TEXTURE_2D);
+        String[] opcoes = {"JOGAR", "MISSOES", "OPCOES", "EXTRAS", "SAIR"};
+
         for (int i = 0; i < opcoes.length; i++) {
-            if (i == menuSelectedIndex) {
-                glColor3f(1f, 0.2f, 0.2f); // vermelho = selecionado
-                textRenderer.renderText("> " + opcoes[i], 55, 210 + i * 60);
+            float baseY = 385 + i * 50;
+            boolean sel = (i == menuSelectedIndex);
+            float proximity = 1f - Math.min(1f, Math.abs(menuBarY - baseY) / 50f);
+
+            if (sel) {
+                glColor4f(1f, 1f, 1f, 1f);
+                textRenderer.renderText(opcoes[i], 50, baseY, 24);
             } else {
-                glColor3f(0.6f, 0.6f, 0.6f); // cinza = não selecionado
-                textRenderer.renderText("  " + opcoes[i], 55, 210 + i * 60);
+                float b = 0.45f + proximity * 0.2f;
+                glColor4f(b, b, b + 0.05f, 0.85f);
+                textRenderer.renderText(opcoes[i], 50, baseY, 24);
             }
         }
 
-        // Atualiza o rodapé
-        glColor3f(0.3f, 0.3f, 0.3f);
-        textRenderer.renderText("Arrows = Navigate   ENTER = Confirm   ESC = Sair", 30, 680);
+        // ══════════════════════════════════════════════════════════
+        // FRASES
+        // ══════════════════════════════════════════════════════════
+        String[] phrases = {
+            "MACH 3.2+ CRUISE SPEED",
+            "OPERATIONAL CEILING: 85,000 FT",
+            "FIRST FLIGHT: 22 DEC 1964",
+            "TOTAL BUILT: 32 AIRCRAFT",
+            "CREW: PILOT + RSO",
+            "RANGE: 3,200 NAUTICAL MILES",
+            "NEVER INTERCEPTED. NEVER SHOT DOWN."
+        };
+        int phraseIdx = ((int)(t / 4f)) % phrases.length;
+        float phraseAlpha = (float)(Math.sin((t % 4f) / 4f * Math.PI)) * 0.55f;
+        glColor4f(0.65f, 0.68f, 0.8f, phraseAlpha);
+        textRenderer.renderText(phrases[phraseIdx], 750, 680, 16);
+
+        // ══════════════════════════════════════════════════════════
+        // CONTROLES
+        // ══════════════════════════════════════════════════════════
+        glColor4f(0.35f, 0.35f, 0.4f, 0.5f);
+        textRenderer.renderText("NAVIGATE", 50, 660, 16);
+        textRenderer.renderText("CONFIRM", 50, 678, 16);
+        glColor4f(0.6f, 0.6f, 0.65f, 0.6f);
+        textRenderer.renderText("UP / DOWN", 145, 660, 16);
+        textRenderer.renderText("ENTER", 145, 678, 16);
+
+        glColor4f(0.2f, 0.2f, 0.25f, 0.3f);
+        textRenderer.renderText("v0.4.1", 1220, 700, 16);
+
+        // Barras finas
+        glDisable(GL_TEXTURE_2D);
+        glColor4f(0.6f, 0.62f, 0.75f, 0.25f);
+        glBegin(GL_QUADS);
+        glVertex2f(0, 0); glVertex2f(1280, 0);
+        glVertex2f(1280, 1); glVertex2f(0, 1);
+        glEnd();
+        glBegin(GL_QUADS);
+        glVertex2f(0, 719); glVertex2f(1280, 719);
+        glVertex2f(1280, 720); glVertex2f(0, 720);
+        glEnd();
+
+        drawCRTOverlay();
     }
     
     private void renderDebriefing() {
         setup2DLegado();
-        glClearColor(0.02f, 0.04f, 0.02f, 1f);
+        glClearColor(0f, 0f, 0f, 1f);
 
+        float t = crtTime;
+
+        // ── IMAGEM DE FUNDO ──────────────────────────────────────
+        glEnable(GL_TEXTURE_2D);
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+        int[] bgTextures = {
+            texPilots, texSR71One, texCrews, texTakeoff,
+            texGilliland, texMarta, texWeaver
+        };
+        float cycleDuration = 5f;
+        float fadeDuration  = 1.5f;
+        float blackGap      = 0.5f;
+        float totalCycle    = cycleDuration + blackGap;
+        int currentImg = ((int)(t / totalCycle)) % bgTextures.length;
+        float cycleProgress = (t % totalCycle);
+
+        float imgAlpha = 0f;
+        if (cycleProgress < fadeDuration)
+            imgAlpha = cycleProgress / fadeDuration;
+        else if (cycleProgress < cycleDuration - fadeDuration)
+            imgAlpha = 1f;
+        else if (cycleProgress < cycleDuration)
+            imgAlpha = (cycleDuration - cycleProgress) / fadeDuration;
+        imgAlpha *= 0.15f;
+
+        float zoom = 1.05f + (cycleProgress / cycleDuration) * 0.03f;
+        float panX = (float)(Math.sin(t * 0.05 + currentImg) * 30);
+        float panY = (float)(Math.cos(t * 0.04 + currentImg) * 15);
+
+        if (imgAlpha > 0.001f) {
+            float imgW = 1280 * zoom;
+            float imgH = 720 * zoom;
+            float ix = (1280 - imgW) / 2 + panX;
+            float iy = (720 - imgH) / 2 + panY;
+            glColor4f(0.7f, 0.72f, 0.85f, imgAlpha);
+            glBindTexture(GL_TEXTURE_2D, bgTextures[currentImg]);
+            glBegin(GL_QUADS);
+            glTexCoord2f(0, 0); glVertex2f(ix, iy);
+            glTexCoord2f(1, 0); glVertex2f(ix + imgW, iy);
+            glTexCoord2f(1, 1); glVertex2f(ix + imgW, iy + imgH);
+            glTexCoord2f(0, 1); glVertex2f(ix, iy + imgH);
+            glEnd();
+            glBindTexture(GL_TEXTURE_2D, 0);
+        }
+
+        // ── GRADIENTES ───────────────────────────────────────────
         glDisable(GL_TEXTURE_2D);
 
-        // Cabeçalho
-        glColor3f(0f, 0.6f, 0f);
         glBegin(GL_QUADS);
-        glVertex2f(80,60); glVertex2f(1200,60);
-        glVertex2f(1200,90); glVertex2f(80,90);
+        glColor4f(0f, 0f, 0f, 0.8f);
+        glVertex2f(0, 0); glVertex2f(1280, 0);
+        glColor4f(0f, 0f, 0f, 0.3f);
+        glVertex2f(1280, 150); glVertex2f(0, 150);
         glEnd();
 
+        glBegin(GL_QUADS);
+        glColor4f(0f, 0f, 0f, 0.2f);
+        glVertex2f(0, 560); glVertex2f(1280, 560);
+        glColor4f(0f, 0f, 0f, 0.85f);
+        glVertex2f(1280, 720); glVertex2f(0, 720);
+        glEnd();
+
+        // ── PARTÍCULAS ───────────────────────────────────────────
+        glPointSize(1.5f);
+        glBegin(GL_POINTS);
+        for (int i = 0; i < 30; i++) {
+            float sx = (float)(Math.sin(i * 127.1) * 0.5 + 0.5) * 1280;
+            float sy = ((float)(Math.cos(i * 311.7) * 0.5 + 0.5) * 720 - t * (2 + i % 5));
+            sy = ((sy % 780) + 780) % 780 - 30;
+            float sa = (float)(Math.sin(t * 0.8 + i * 0.5) * 0.5 + 0.5) * 0.15f;
+            glColor4f(0.7f, 0.72f, 0.9f, sa);
+            glVertex2f(sx, sy);
+        }
+        glEnd();
+        glPointSize(1f);
+
+        // ── CABEÇALHO ────────────────────────────────────────────
         glEnable(GL_TEXTURE_2D);
-        glColor3f(0f, 0f, 0f);
-        String result = stats.isCompleted() ? "MISSAO COMPLETA" : "MISSAO FALHOU";
-        textRenderer.renderText(result, 500, 68);
 
-        glColor3f(0f, 0.8f, 0f);
-        textRenderer.renderText("DEBRIEFING CLASSIFICADO", 90, 68);
+        glColor4f(0.5f, 0.52f, 0.65f, 0.6f);
+        textRenderer.renderText("DEBRIEFING", 80, 45, 16);
 
-        // Linha separadora
+        boolean completed = stats.isCompleted();
+        String result = completed ? "MISSION ACCOMPLISHED" : "MISSION FAILED";
+        if (completed)
+            glColor4f(0.4f, 1f, 0.5f, 1f);
+        else
+            glColor4f(1f, 0.35f, 0.35f, 1f);
+        textRenderer.renderText(result, 80, 70, 48);
+
+        // Linha sob o resultado
         glDisable(GL_TEXTURE_2D);
-        glColor3f(0f, 0.4f, 0f);
-        glBegin(GL_LINES);
-        glVertex2f(80, 110); glVertex2f(1200, 110);
+        float headerLineW = Math.min(600, t * 300);
+        if (completed)
+            glColor4f(0.3f, 0.8f, 0.4f, 0.4f);
+        else
+            glColor4f(0.8f, 0.2f, 0.2f, 0.4f);
+        glBegin(GL_QUADS);
+        glVertex2f(80, 100); glVertex2f(80 + headerLineW, 100);
+        glVertex2f(80 + headerLineW, 101); glVertex2f(80, 101);
         glEnd();
 
+        // ── DADOS DE VOO ─────────────────────────────────────────
         glEnable(GL_TEXTURE_2D);
 
-        // Dados da missão
-        float lx = 150, rx = 700, y = 160;
-        float step = 45;
+        float lx = 100, rx = 500, y = 140;
+        float step = 50;
 
-        glColor3f(0f, 0.5f, 0f);
-        textRenderer.renderText("MISSAO:", lx, y);
-        glColor3f(0f, 1f, 0f);
-        textRenderer.renderText(stats.getMissionName() != null ? stats.getMissionName() : "—", rx, y);
+        // Missão
+        glColor4f(0.5f, 0.52f, 0.6f, 0.7f);
+        textRenderer.renderText("MISSION", lx, y, 16);
+        glColor4f(0.9f, 0.92f, 1f, 0.95f);
+        textRenderer.renderText(stats.getMissionName() != null ? stats.getMissionName() : "—", rx, y, 24);
         y += step;
-        glColor3f(0f, 0.5f, 0f);
-        textRenderer.renderText("TEMPO DE VOO:", lx, y);
-        glColor3f(0f, 1f, 0f);
-        textRenderer.renderText(stats.getElapsedFormatted(), rx, y); y += step;
 
-        glColor3f(0f, 0.5f, 0f);
-            textRenderer.renderText("ALTITUDE MEDIA:", lx, y);
-        glColor3f(0f, 1f, 0f);
-        textRenderer.renderText(String.format("%.0f ft", stats.getAvgAltitude()), rx, y); y += step;
+        // Tempo
+        glColor4f(0.5f, 0.52f, 0.6f, 0.7f);
+        textRenderer.renderText("FLIGHT TIME", lx, y, 16);
+        glColor4f(0.9f, 0.92f, 1f, 0.95f);
+        textRenderer.renderText(stats.getElapsedFormatted(), rx, y, 24);
+        y += step;
 
-        glColor3f(0f, 0.5f, 0f);
-        textRenderer.renderText("ALTITUDE MAXIMA:", lx, y);
-        glColor3f(0f, 1f, 0f);
-        textRenderer.renderText(String.format("%.0f ft", stats.getMaxAltitude()), rx, y); y += step;
+        // Altitude média
+        glColor4f(0.5f, 0.52f, 0.6f, 0.7f);
+        textRenderer.renderText("AVG ALTITUDE", lx, y, 16);
+        glColor4f(0.9f, 0.92f, 1f, 0.95f);
+        textRenderer.renderText(String.format("%.0f ft", stats.getAvgAltitude()), rx, y, 24);
+        y += step;
 
-        glColor3f(0f, 0.5f, 0f);
-        textRenderer.renderText("VELOCIDADE MAXIMA:", lx, y);
-        glColor3f(0f, 1f, 0f);
+        // Altitude máxima
+        glColor4f(0.5f, 0.52f, 0.6f, 0.7f);
+        textRenderer.renderText("MAX ALTITUDE", lx, y, 16);
+        glColor4f(0.9f, 0.92f, 1f, 0.95f);
+        textRenderer.renderText(String.format("%.0f ft", stats.getMaxAltitude()), rx, y, 24);
+        y += step;
+
+        // Velocidade
+        glColor4f(0.5f, 0.52f, 0.6f, 0.7f);
+        textRenderer.renderText("MAX SPEED", lx, y, 16);
+        glColor4f(0.9f, 0.92f, 1f, 0.95f);
         textRenderer.renderText(String.format("%.0f km/h  (Mach %.2f)",
-            stats.getMaxSpeed() * 3.6, stats.getMaxMach()), rx, y); y += step;
+            stats.getMaxSpeed() * 3.6, stats.getMaxMach()), rx, y, 24);
+        y += step;
 
-        glColor3f(0f, 0.5f, 0f);
-        textRenderer.renderText("CONTRA-MEDIDAS USADAS:", lx, y);
-        glColor3f(0f, 1f, 0f);
-        textRenderer.renderText(String.valueOf(stats.getCountermeasures()), rx, y); y += step;
+        // Contramedidas
+        glColor4f(0.5f, 0.52f, 0.6f, 0.7f);
+        textRenderer.renderText("COUNTERMEASURES", lx, y, 16);
+        glColor4f(0.9f, 0.92f, 1f, 0.95f);
+        textRenderer.renderText(String.valueOf(stats.getCountermeasures()), rx, y, 24);
+        y += step + 10;
 
-        // Classificação
-        y += 20;
+        // ── LINHA SEPARADORA ─────────────────────────────────────
         glDisable(GL_TEXTURE_2D);
-        glColor3f(0f, 0.3f, 0f);
-        glBegin(GL_LINES);
+        glColor4f(0.5f, 0.52f, 0.65f, 0.3f);
+        glBegin(GL_QUADS);
         glVertex2f(80, y); glVertex2f(1200, y);
+        glVertex2f(1200, y + 1); glVertex2f(80, y + 1);
         glEnd();
-        glEnable(GL_TEXTURE_2D);
         y += 25;
 
-        String rating = getRating();
-        glColor3f(0f, 1f, 0.3f);
-        textRenderer.renderText("AVALIACAO:  " + rating, lx, y);
+        // ── AVALIAÇÃO ────────────────────────────────────────────
+        glEnable(GL_TEXTURE_2D);
+        glColor4f(0.5f, 0.52f, 0.6f, 0.7f);
+        textRenderer.renderText("RATING", lx, y, 16);
 
-        glColor3f(0f, 0.4f, 0f);
-        textRenderer.renderText("ENTER para continuar", 530, 680);
-        
+        String rating = getRating();
+        if (completed)
+            glColor4f(0.5f, 1f, 0.6f, 1f);
+        else
+            glColor4f(1f, 0.35f, 0.35f, 1f);
+        textRenderer.renderText(rating, rx, y, 32);
+
+        // ── RODAPÉ ───────────────────────────────────────────────
+        glColor4f(0.4f, 0.42f, 0.5f, 0.5f);
+        textRenderer.renderText("CONTINUE", 80, 670, 16);
+        glColor4f(0.6f, 0.62f, 0.7f, 0.6f);
+        textRenderer.renderText("ENTER", 180, 670, 16);
+
+        // Barras finas
+        glDisable(GL_TEXTURE_2D);
+        glColor4f(0.6f, 0.62f, 0.75f, 0.25f);
+        glBegin(GL_QUADS);
+        glVertex2f(0, 0); glVertex2f(1280, 0);
+        glVertex2f(1280, 1); glVertex2f(0, 1);
+        glEnd();
+        glBegin(GL_QUADS);
+        glVertex2f(0, 719); glVertex2f(1280, 719);
+        glVertex2f(1280, 720); glVertex2f(0, 720);
+        glEnd();
+
+        // Livery unlock
         if (stats.isCompleted() && stats.getMaxMach() >= 3.5 && !liveryUnlocked[1]) {
             liveryUnlocked[1] = true;
             triggerRSO("LIVERY DESBLOQUEADA: WHITEBIRD!");
         }
+
+        drawCRTOverlay();
     }
 
     private String getRating() {
@@ -2154,21 +3294,126 @@ public class FlyData {
     private void renderGameOver() {
         setup2DLegado();
         glClearColor(0f, 0f, 0f, 1f);
+
+        float t = crtTime;
+
+        // ── IMAGEM DE FUNDO — estática, escura ───────────────────
+        glEnable(GL_TEXTURE_2D);
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+        // Imagem fixa com leve zoom
+        float zoom = 1.05f + (float)(Math.sin(t * 0.3) * 0.02);
+        float imgW = 1280 * zoom;
+        float imgH = 720 * zoom;
+        float ix = (1280 - imgW) / 2;
+        float iy = (720 - imgH) / 2;
+
+        // Tint vermelho escuro
+        glColor4f(0.5f, 0.15f, 0.15f, 0.15f);
+        glBindTexture(GL_TEXTURE_2D, texPilots);
+        glBegin(GL_QUADS);
+        glTexCoord2f(0, 0); glVertex2f(ix, iy);
+        glTexCoord2f(1, 0); glVertex2f(ix + imgW, iy);
+        glTexCoord2f(1, 1); glVertex2f(ix + imgW, iy + imgH);
+        glTexCoord2f(0, 1); glVertex2f(ix, iy + imgH);
+        glEnd();
+        glBindTexture(GL_TEXTURE_2D, 0);
+
+        // ── GRADIENTES ESCUROS ───────────────────────────────────
         glDisable(GL_TEXTURE_2D);
 
-        // Linha vermelha no topo
-        glColor3f(0.7f, 0f, 0f);
+        // Escurecimento geral
+        glColor4f(0f, 0f, 0f, 0.7f);
         glBegin(GL_QUADS);
-        glVertex2f(0,0); glVertex2f(1280,0);
-        glVertex2f(1280,6); glVertex2f(0,6);
+        glVertex2f(0, 0); glVertex2f(1280, 0);
+        glVertex2f(1280, 720); glVertex2f(0, 720);
         glEnd();
 
+        // Vinheta vermelha pulsante nas bordas
+        float vPulse = 0.08f + (float)(Math.sin(t * 2) * 0.04);
+        glColor4f(0.6f, 0f, 0f, vPulse);
+        // Topo
+        glBegin(GL_QUADS);
+        glVertex2f(0, 0); glVertex2f(1280, 0);
+        glColor4f(0.6f, 0f, 0f, 0f);
+        glVertex2f(1280, 100); glVertex2f(0, 100);
+        glEnd();
+        // Bottom
+        glColor4f(0.6f, 0f, 0f, 0f);
+        glBegin(GL_QUADS);
+        glVertex2f(0, 620); glVertex2f(1280, 620);
+        glColor4f(0.6f, 0f, 0f, vPulse);
+        glVertex2f(1280, 720); glVertex2f(0, 720);
+        glEnd();
+
+        // ── LINHA VERMELHA HORIZONTAL ────────────────────────────
+        float lineAlpha = 0.3f + (float)(Math.sin(t * 1.5) * 0.1);
+        glColor4f(0.8f, 0.1f, 0.1f, lineAlpha);
+        glBegin(GL_QUADS);
+        glVertex2f(0, 358); glVertex2f(1280, 358);
+        glVertex2f(1280, 362); glVertex2f(0, 362);
+        glEnd();
+
+        // ── STATIC NOISE ─────────────────────────────────────────
+        float noiseIntensity = 0.05f + (float)(Math.sin(t * 4) * 0.02);
+        glBegin(GL_LINES);
+        for (int i = 0; i < 20; i++) {
+            float ny = (float)((Math.sin(i * 73.1 + t * 7) * 0.5 + 0.5) * 720);
+            float nx = (float)((Math.cos(i * 131.7 + t * 3) * 0.5 + 0.5) * 800);
+            float nw = 100 + (float)(Math.sin(i * 37.3) * 80);
+            glColor4f(1f, 0.2f, 0.2f, noiseIntensity);
+            glVertex2f(nx, ny);
+            glVertex2f(nx + nw, ny);
+        }
+        glEnd();
+
+        // ── TEXTO ────────────────────────────────────────────────
         glEnable(GL_TEXTURE_2D);
-        glColor3f(0.8f, 0.05f, 0.05f);
-        textRenderer.renderText("AERONAVE ABATIDA", 450, 280);
-        glColor3f(0.5f, 0.5f, 0.5f);
-        textRenderer.renderText("O SR-71 foi perdido.", 510, 330);
-        textRenderer.renderText("ENTER para ver o debriefing", 460, 420);
+
+        // "AIRCRAFT LOST" — grande e vermelho
+        glColor4f(0f, 0f, 0f, 0.5f);
+        textRenderer.renderText("AIRCRAFT LOST", 322, 282, 64);
+        glColor4f(1f, 0.2f, 0.2f, 1f);
+        textRenderer.renderText("AIRCRAFT LOST", 320, 280, 64);
+
+        // Subtítulo
+        glColor4f(0.6f, 0.4f, 0.4f, 0.7f);
+        textRenderer.renderText("The SR-71 has been lost over hostile territory.", 340, 340, 16);
+
+        // Linha fina sob o texto
+        glDisable(GL_TEXTURE_2D);
+        glColor4f(0.6f, 0.1f, 0.1f, 0.3f);
+        glBegin(GL_QUADS);
+        glVertex2f(320, 360); glVertex2f(960, 360);
+        glVertex2f(960, 361); glVertex2f(320, 361);
+        glEnd();
+
+        // Status info
+        glEnable(GL_TEXTURE_2D);
+        if (stats.getMissionName() != null) {
+            glColor4f(0.5f, 0.35f, 0.35f, 0.6f);
+            textRenderer.renderText("MISSION: " + stats.getMissionName(), 440, 400, 16);
+        }
+
+        // Continuar
+        float contAlpha = 0.4f + (float)(Math.sin(t * 2.5) * 0.15);
+        glColor4f(0.6f, 0.45f, 0.45f, contAlpha);
+        textRenderer.renderText("ENTER to view debriefing", 475, 480, 16);
+
+        // Barras finas vermelhas
+        glDisable(GL_TEXTURE_2D);
+        glColor4f(0.7f, 0.08f, 0.08f, 0.4f);
+        glBegin(GL_QUADS);
+        glVertex2f(0, 0); glVertex2f(1280, 0);
+        glVertex2f(1280, 2); glVertex2f(0, 2);
+        glEnd();
+        glBegin(GL_QUADS);
+        glVertex2f(0, 718); glVertex2f(1280, 718);
+        glVertex2f(1280, 720); glVertex2f(0, 720);
+        glEnd();
+
+        drawCRTOverlay();
     }
     
     private void confirmMenuSelection() {
@@ -2176,10 +3421,10 @@ public class FlyData {
 	        case 0 -> {
 	            stats.begin("Voo Livre");
 	            startGameplay();
-	            currentScreen = Screen.EXTERNAL;
+	            transitionTo(Screen.EXTERNAL);
 	        }
             case 1 -> { // MISSOES
-                currentScreen = Screen.MISSION_SELECT;
+                transitionTo(Screen.MISSION_SELECT);
             }
             case 2 -> { // OPCOES
                 // por enquanto não faz nada — placeholder
@@ -2201,12 +3446,12 @@ public class FlyData {
                 stopGameplay();
                 startGameplay();
             }
-            case 2 -> { // Menu principal
+            case 2 -> {
                 paused = false;
                 stopGameplay();
                 stats.setCompleted(false);
-                previousScreen = Screen.MAIN_MENU;  // limpa referência
-                currentScreen = Screen.MAIN_MENU;
+                previousScreen = Screen.MAIN_MENU;
+                transitionTo(Screen.MAIN_MENU);
             }
         }
     }
@@ -2528,6 +3773,207 @@ public class FlyData {
             currentLivery = index;
             System.out.println("Livery carregada: " + liveryNames[index]);
         }
+    }
+    
+    private void transitionTo(Screen target) {
+        if (transitioning) return;  // ignora se já está em transição
+        transitioning = true;
+        transTimer    = 0f;
+        transTarget   = target;
+        transHalfDone = false;
+    }
+    
+    private void renderVHSTransition(float progress) {
+        setup2DLegado();
+        glDisable(GL_TEXTURE_2D);
+
+        // Intensidade: sobe até 0.5, depois desce
+        float intensity = progress < 0.5f 
+            ? progress / 0.5f          // 0 → 1
+            : (1f - progress) / 0.5f;  // 1 → 0
+
+        // ── 1. BLACKOUT gradual ───────────────────────────────────
+        glColor4f(0f, 0f, 0f, intensity * 0.85f);
+        glBegin(GL_QUADS);
+        glVertex2f(0, 0); glVertex2f(1280, 0);
+        glVertex2f(1280, 720); glVertex2f(0, 720);
+        glEnd();
+
+        // ── 2. BARRAS DE TRACKING (distorção horizontal) ──────────
+        float barSpeed = crtTime * 200f;
+        for (int i = 0; i < 5; i++) {
+            float barY = ((barSpeed + i * 173.7f) % 800f) - 40f;
+            float barH = 8f + (float)(Math.sin(crtTime * 3f + i) * 4f);
+            float barAlpha = intensity * 0.6f;
+
+            // Barra escura
+            glColor4f(0f, 0f, 0f, barAlpha);
+            glBegin(GL_QUADS);
+            glVertex2f(0, barY);
+            glVertex2f(1280, barY);
+            glVertex2f(1280, barY + barH);
+            glVertex2f(0, barY + barH);
+            glEnd();
+
+            // Deslocamento horizontal (glitch)
+            float offset = (float)(Math.sin(crtTime * 15f + i * 7f)) * 30f * intensity;
+            glColor4f(1f, 1f, 1f, barAlpha * 0.15f);
+            glBegin(GL_QUADS);
+            glVertex2f(offset, barY - 2);
+            glVertex2f(1280 + offset, barY - 2);
+            glVertex2f(1280 + offset, barY + barH + 2);
+            glVertex2f(offset, barY + barH + 2);
+            glEnd();
+        }
+
+        // ── 3. STATIC NOISE (linhas aleatórias) ───────────────────
+        int noiseLines = (int)(60 * intensity);
+        glBegin(GL_LINES);
+        for (int i = 0; i < noiseLines; i++) {
+            float ny = (float)(Math.random() * 720);
+            float nx = (float)(Math.random() * 400);
+            float nw = (float)(Math.random() * 300) + 50;
+            float alpha = (float)(Math.random() * 0.3f * intensity);
+            glColor4f(1f, 1f, 1f, alpha);
+            glVertex2f(nx, ny);
+            glVertex2f(nx + nw, ny);
+        }
+        glEnd();
+
+        // ── 4. CHROMATIC SPLIT (aberração RGB na borda) ───────────
+        float splitOffset = intensity * 6f;
+        // Faixa vermelha deslocada
+        glColor4f(1f, 0f, 0f, intensity * 0.08f);
+        glBegin(GL_QUADS);
+        glVertex2f(-splitOffset, 0);
+        glVertex2f(1280 - splitOffset, 0);
+        glVertex2f(1280 - splitOffset, 720);
+        glVertex2f(-splitOffset, 720);
+        glEnd();
+        // Faixa cyan deslocada pro outro lado
+        glColor4f(0f, 1f, 1f, intensity * 0.06f);
+        glBegin(GL_QUADS);
+        glVertex2f(splitOffset, 0);
+        glVertex2f(1280 + splitOffset, 0);
+        glVertex2f(1280 + splitOffset, 720);
+        glVertex2f(splitOffset, 720);
+        glEnd();
+
+        // ── 5. FLASH BRANCO no momento da troca ───────────────────
+        if (progress > 0.45f && progress < 0.55f) {
+            float flashAlpha = (1f - Math.abs(progress - 0.5f) / 0.05f) * 0.3f;
+            glColor4f(1f, 1f, 1f, Math.max(0, flashAlpha));
+            glBegin(GL_QUADS);
+            glVertex2f(0, 0); glVertex2f(1280, 0);
+            glVertex2f(1280, 720); glVertex2f(0, 720);
+            glEnd();
+        }
+
+        // ── 6. SCANLINES intensificadas ───────────────────────────
+        glColor4f(0f, 0f, 0f, intensity * 0.3f);
+        glBegin(GL_LINES);
+        for (int y = 0; y < 720; y += 2) {
+            glVertex2f(0, y); glVertex2f(1280, y);
+        }
+        glEnd();
+    }
+    
+    private void updateHudGlitch() {
+        glitchTimer -= lastDelta;
+        
+        if (glitchTimer <= 0) {
+
+            glitchTimer    = 2f + (float)(Math.random() * 6f);
+            glitchDuration = 0.05f + (float)(Math.random() * 0.15f);
+            glitchOffsetX  = (float)(Math.random() * 8f - 4f);
+            hudFlicker     = Math.random() < 0.3; 
+        }
+        
+        if (glitchTimer > glitchDuration) {
+            glitchOffsetX = 0;
+            hudFlicker    = false;
+        }
+    }
+    
+    private void renderTargetMarker() {
+        Mission current = missionManager.currentMission();
+        if (!(current instanceof fbw.gameplay.MissionRecon recon)) return;
+        if (current.getState() != Mission.State.ACTIVE) return;
+
+        Vector3f target = recon.getTarget();
+        
+        // Coluna vertical brilhante no alvo
+        glDisable(GL_TEXTURE_2D);
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE);  // additive — brilha
+        
+        // Usa as matrizes da câmera 3D
+        glUseProgram(0);
+        glBindVertexArray(0);
+        
+        FloatBuffer fbProj = BufferUtils.createFloatBuffer(16);
+        camera.getProjectionMatrix().get(fbProj);
+        glMatrixMode(GL_PROJECTION);
+        glLoadIdentity();
+        glLoadMatrixf(fbProj);
+        
+        FloatBuffer fbView = BufferUtils.createFloatBuffer(16);
+        camera.getViewMatrix().get(fbView);
+        glMatrixMode(GL_MODELVIEW);
+        glLoadIdentity();
+        glLoadMatrixf(fbView);
+        
+        glEnable(GL_DEPTH_TEST);
+        glDepthMask(false);
+        
+        // Coluna pulsante
+        float pulse = 0.5f + (float)(Math.sin(crtTime * 3.0) * 0.3);
+        float tx = target.x, tz = target.z;
+        
+        // Coluna verde (vai do chão até 30000 de altura)
+        glLineWidth(3f);
+        glColor4f(0f, 1f, 0.3f, pulse * 0.4f);
+        glBegin(GL_LINES);
+        glVertex3f(tx, 0f, tz);
+        glVertex3f(tx, 30000f, tz);
+        glEnd();
+        
+        // Losango no topo
+        float dSize = 500f;
+        float dY = 25000f;
+        glColor4f(1f, 0.3f, 0.3f, pulse * 0.6f);
+        glBegin(GL_LINE_LOOP);
+        glVertex3f(tx - dSize, dY, tz);
+        glVertex3f(tx, dY + dSize, tz);
+        glVertex3f(tx + dSize, dY, tz);
+        glVertex3f(tx, dY - dSize, tz);
+        glEnd();
+        
+        // Círculos no chão mostrando a zona de captura (8000 unidades)
+        float captureRadius = 8000f;
+        glColor4f(0f, 1f, 0.3f, pulse * 0.2f);
+        glBegin(GL_LINE_LOOP);
+        for (int i = 0; i < 64; i++) {
+            double a = Math.PI * 2.0 * i / 64;
+            glVertex3f(tx + (float)Math.cos(a) * captureRadius, 100f, 
+                       tz + (float)Math.sin(a) * captureRadius);
+        }
+        glEnd();
+        
+        // Círculo da zona hostil (25000 unidades) — vermelho
+        float hostileRadius = 25000f;
+        glColor4f(1f, 0.2f, 0.1f, pulse * 0.15f);
+        glBegin(GL_LINE_LOOP);
+        for (int i = 0; i < 64; i++) {
+            double a = Math.PI * 2.0 * i / 64;
+            glVertex3f(tx + (float)Math.cos(a) * hostileRadius, 100f, 
+                       tz + (float)Math.sin(a) * hostileRadius);
+        }
+        glEnd();
+        
+        glLineWidth(1f);
+        glDepthMask(true);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     }
     
     public static void main(String[] args) { new FlyData().run(); }

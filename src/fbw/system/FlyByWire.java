@@ -49,11 +49,10 @@ public class FlyByWire {
     private int     hp       = 1; // 1 hit = morte instantânea
     
     public FlyByWire() {
-        // Altitude inicial: 20000 ft → posicao.y = 2000
-        state   = new FlightData(20000, 1000, 0, 0, 0, 0);
+        state   = new FlightData(20000, 200, 0, 0, 0, 0); 
         posicao = new Vector3f(0, (float)(20000 / ALT_SCALE), 0);
         direcao = new Vector3f(0, 0, -1);
-        throttle = state.speed;
+        throttle = 300; 
     }
 
     public void start() {

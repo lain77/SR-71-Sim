@@ -90,6 +90,18 @@ public class Enemy {
         // Executa a cada 100ms para responder rápido à contra-medida
         scheduler.scheduleAtFixedRate(missileTask, 5000, 1000, TimeUnit.MILLISECONDS);
     }
+    
+    public void launchMissile() {
+        if (missileActive) return; 
+        missileActive  = true;
+        missileWarning = true;
+        missileStartTime = System.currentTimeMillis();
+        System.out.println("SAM LAUNCH!");
+        audio.playSound("/audio/F-14-Tomcat-RWR-Sounds.wav");
+        
+        Vector3f playerPos = fbw.getPosicao();
+        posicao.set(playerPos.x + 15000f, playerPos.y - 3000f, playerPos.z + 15000f);
+    }
 
     public boolean isMissileWarning() {
         return missileWarning;

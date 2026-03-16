@@ -15,57 +15,50 @@ public class MissionManager {
     }
 
     private void buildCampaign() {
-        // Missão 1 — introdução: manter janela de voo
+        // Missão 1 — tutorial (altitude em ft real do jogo)
         missions.add(new MissionFlightWindow(
-            "Missao 1: Voar Alto",
-            20000f, 30000f,   // altitude
-            1.5f,   3.0f,     // Mach
-            20f               // 20 segundos
+            "CHECKRIDE",
+            15000f, 40000f,    // range bem aberto
+            1.0f, 3.5f,        // Mach range aberto
+            15f                 // 15 segundos
         ));
 
-        // Missão 2 — reconhecimento no centro do mapa
+        // Missão 2 — primeiro recon
         missions.add(new MissionRecon(
-            "Missao 2: Operacao Oxcart",
+            "GIANT REACH",
             new Vector3f(0f, 0f, 0f),
-            15000f, 28000f,   // altitude
-            250f              // ~Mach 0.7 mínimo
+            0f, 999999f,       // sem restrição de altitude por ora
+            200f               // velocidade mínima baixa
         ));
 
-        // Missão 3 — fuga de interceptação
+        // Missão 3 — fuga
         missions.add(new MissionEscape(
-            "Missao 3: Haast's Eagle",
-            2.5f  // Mach 2.5
+            "HAAST'S EAGLE",
+            2.0f               // Mach 2 — mais acessível
         ));
 
-        // Missão 4 — recon avançado com janela apertada
+        // Missão 4 — recon avançado
         missions.add(new MissionRecon(
-            "Missao 4: Deep Penetration",
+            "DEEP PENETRATION",
             new Vector3f(50000f, 0f, -30000f),
-            22000f, 26000f,
-            400f
+            0f, 999999f,
+            300f
         ));
 
-        // Missão 5 — fuga hipersônica final
+        // Missão 5 — final
         missions.add(new MissionEscape(
-            "Missao 5: Mach 3 ou morte",
-            3.0f
+            "SENIOR CROWN",
+            2.8f
         ));
     }
 
-    // Chamado a cada frame com delta time em segundos
     public void update(float delta, fbw.system.FlyByWire fbw, fbw.system.Enemy enemy) {
         if (menuOpen || currentIndex < 0) return;
         Mission m = currentMission();
         if (m == null) return;
-
-        m.update(delta, fbw, enemy);
-
-        // Auto-avança para próxima após sucesso
-        if (m.getState() == Mission.State.SUCCESS) {
-            if (currentIndex + 1 < missions.size()) {
-                currentIndex++;
-                missions.get(currentIndex).start();
-            }
+        
+        if (m.getState() == Mission.State.ACTIVE) {
+            m.update(delta, fbw, enemy);
         }
     }
 

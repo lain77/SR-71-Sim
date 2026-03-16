@@ -2,9 +2,9 @@ package fbw.gameplay;
 
 public class MissionEscape extends Mission {
 
-    private final float requiredMach;   // Mach mínimo para escapar
-    private float       highSpeedTime;  // tempo acima da velocidade
-    private static final float REQUIRED = 8f; // 8s acima do Mach exigido
+    private final float requiredMach;
+    private float       highSpeedTime;
+    private static final float REQUIRED = 8f;
 
     private boolean missileWasActive = false;
 
@@ -12,11 +12,35 @@ public class MissionEscape extends Mission {
         this.name         = name;
         this.requiredMach = requiredMach;
         this.timeLimit    = 120f;
-        this.briefing     = String.format(
-            "Radar inimigo detectou voce!\n" +
-            "Acelere para Mach %.1f e mantenha por 8 segundos\n" +
-            "para escapar do envelope de interceptacao.",
+        this.briefing = String.format(
+            "ALERTA VERMELHO\n\n" +
+            "Radar inimigo tem lock no seu SR-71.\n" +
+            "Misseis SAM ja foram lancados.\n\n" +
+            "PROCEDIMENTO DE FUGA:\n" +
+            "  1. Acelere para Mach %.1f+\n" +
+            "  2. Mantenha por 8 segundos\n" +
+            "  3. Use contra-medidas se necessario [S]\n\n" +
+            "Nenhum missil ja conseguiu atingir\n" +
+            "um SR-71. Nao seja o primeiro.",
             requiredMach);
+
+        rsoEvents.add(new RSOEvent(2f,  "MISSILE LAUNCH! MISSILE LAUNCH!"));
+        rsoEvents.add(new RSOEvent(8f,  "Multiple contacts — push it up!"));
+        rsoEvents.add(new RSOEvent(20f, "Still tracking — keep accelerating!"));
+    }
+
+    @Override
+    public void start() {
+        super.start();
+        highSpeedTime    = 0;
+        missileWasActive = false;
+    }
+
+    @Override
+    public void reset() {
+        super.reset();
+        highSpeedTime    = 0;
+        missileWasActive = false;
     }
 
     @Override
@@ -36,6 +60,11 @@ public class MissionEscape extends Mission {
             highSpeedTime = Math.max(0, highSpeedTime - delta * 0.3f);
         }
 
+        // Dispara mísseis periodicamente
+        if (elapsed > 3f && ((int)(elapsed) % 10 == 0)) {
+            enemy.launchMissile();
+        }
+
         if (enemy.isMissileWarning()) {
             missileWasActive = true;
         }
@@ -43,12 +72,13 @@ public class MissionEscape extends Mission {
 
     @Override
     public String getHudStatus() {
-        if (state == State.SUCCESS) return "ESCAPE REALIZADO!";
-        if (state == State.FAILED)  return "ABATIDO - Missao falhou";
+        if (state == State.SUCCESS) return "OUTRUN! MISSILE LOST — RTB";
+        if (state == State.FAILED)  return "SHOT DOWN";
 
         float pct = (highSpeedTime / REQUIRED) * 100f;
-        fbw.system.FlyByWire.FlightData data = null; // só para evitar null
-        return String.format("FUGA | Mach %.1f req | Escape: %2.0f%% | %ds",
+        return String.format("!! EVADE !! | MACH %.1f+ REQ | ESCAPE: %2.0f%% | %ds",
                              requiredMach, pct, remainingSeconds());
     }
+    
+    public float getTargetMach() { return requiredMach; }
 }
