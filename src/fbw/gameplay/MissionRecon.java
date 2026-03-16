@@ -70,4 +70,13 @@ public class MissionRecon extends Mission {
         return String.format("RECON | Progresso: %2.0f%% | Tempo: %ds",
                              pct, remainingSeconds());
     }
+    
+    public void capturePhoto() {
+        // Conta como progresso máximo — foto tirada conta como missão completa
+        captureProgress = REQUIRED;
+    }
+    
+    public Vector3f getTarget()  { return target; }
+    public float    getMinAlt()  { return minAlt; }
+    public float    getMaxAlt()  { return maxAlt; }
 }

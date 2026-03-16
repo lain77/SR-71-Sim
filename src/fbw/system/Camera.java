@@ -7,7 +7,13 @@ public class Camera {
     private final Vector3f position = new Vector3f();
     private final Vector3f target = new Vector3f();
     private final Vector3f up = new Vector3f(0, 1, 0);
+    private Vector3f downwardUp = null;
+    
+    private Matrix4f cachedDownwardView = null;
 
+    private float baseFov = 60f;
+    private float currentFov = 60f;
+    
     private float near = 1f;
     private float far = 150000f; 
     private float fov = 70f;
@@ -24,7 +30,15 @@ public class Camera {
     public void lookAt(float tx, float ty, float tz) { target.set(tx,ty,tz); }
     public void setAspect(float aspect) { this.aspect = aspect; }
 
-    public Matrix4f getViewMatrix() { return new Matrix4f().lookAt(position, target, up); }
+    public Matrix4f getViewMatrix() {
+        if (cachedDownwardView != null) return cachedDownwardView;
+        return new Matrix4f().lookAt(position, target, up);
+    }
+    
+    public void clearDownwardCam() {
+        this.cachedDownwardView = null;
+    }
+    
     public Matrix4f getProjectionMatrix() { return new Matrix4f().perspective((float)Math.toRadians(fov), aspect, near, far); }
 
     // --- CONTROLE DO MOUSE ---
@@ -65,9 +79,23 @@ public class Camera {
         }
     }
     
+    public void setDownwardCam(Vector3f pos, Vector3f tgt, float yawDegrees) {
+        this.position.set(pos);
+        this.target.set(tgt);
+        float yawRad = (float) Math.toRadians(yawDegrees);
+        Vector3f upVec = new Vector3f((float) Math.sin(yawRad), 0f, (float) Math.cos(yawRad));
+        this.cachedDownwardView = new Matrix4f().lookAt(pos, tgt, upVec);
+    }
+    
     public void setIntroCam(Vector3f camPos, Vector3f lookAt) {
         this.position.set(camPos);
         this.target.set(lookAt);
+    }
+    
+    public void updateFovForSpeed(double speed, double maxSpeed, float aspect) {
+        float targetFov = baseFov + (float)(speed / maxSpeed) * 20f;
+        currentFov += (targetFov - currentFov) * 0.05f;
+        this.fov = currentFov;
     }
 
     public void updateAspect(int width, int height) { this.aspect = (float) width / height; }

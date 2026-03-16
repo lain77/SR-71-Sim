@@ -36,7 +36,6 @@ public class MissionEscape extends Mission {
             highSpeedTime = Math.max(0, highSpeedTime - delta * 0.3f);
         }
 
-        // Falha se o míssil acertar (simplificado: aviso ativo por tempo demais)
         if (enemy.isMissileWarning()) {
             missileWasActive = true;
         }

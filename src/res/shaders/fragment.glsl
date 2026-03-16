@@ -57,17 +57,22 @@ void main() {
         float height = FragPos.y;
         float slope  = dot(norm, vec3(0.0, 1.0, 0.0));
 
-        vec3 colGrass = texture(texture1, TexCoords).rgb;
-        colGrass = pow(colGrass, vec3(0.85)) * vec3(0.85, 1.15, 0.75);
+        vec2 uv1 = TexCoords * 0.4;
+        vec2 uv2 = TexCoords * 0.18;
+        vec2 uv3 = TexCoords * 0.08;
 
-        vec3 colDarkGrass = colGrass * vec3(0.7, 0.9, 0.6);
+        vec3 colGrass = texture(texture1, uv1).rgb;
+        colGrass = pow(colGrass, vec3(0.75)) * vec3(0.78, 1.08, 0.62);
 
-        vec3 colRock = texture(texRock, TexCoords * 0.5).rgb;
-        colRock = pow(colRock, vec3(0.9)) * vec3(1.05, 0.95, 0.85);
+        vec3 colDarkGrass = colGrass * vec3(0.65, 0.88, 0.55);
 
-        vec3 colDry = colRock * vec3(1.2, 1.05, 0.8);
+        vec3 colRock = texture(texRock, uv2).rgb;
+        colRock = pow(colRock, vec3(0.88)) * vec3(1.08, 0.96, 0.82);
 
-        vec3 colSnow = texture(texSnow, TexCoords * 0.3).rgb;
+        vec3 colDry = colRock * vec3(1.15, 1.02, 0.78);
+
+        vec3 colSnow = texture(texSnow, uv3).rgb;
+        colSnow = mix(colSnow, vec3(0.92, 0.95, 1.0), 0.3);
 
         vec3 colWater = vec3(0.12, 0.28, 0.52)
                       + vec3(0.05, 0.1, 0.15) * valueNoise(FragPos.x, FragPos.z);
@@ -92,13 +97,13 @@ void main() {
         float waterBlend = smoothstep(-30.0, -80.0, height);
         baseColor = mix(layer3, colWater, waterBlend);
 
-	} else if (useTexture) {
-	    vec4 texSample = texture(texture1, TexCoords);
-	    if (texSample.a < 0.3) discard; // descarta pixels transparentes das folhas
-	    baseColor = texSample.rgb;
-	} else {
-	    baseColor = objectColor;
-	}
+    } else if (useTexture) {
+        vec4 texSample = texture(texture1, TexCoords);
+        if (texSample.a < 0.3) discard;
+        baseColor = texSample.rgb;
+    } else {
+        baseColor = objectColor;
+    }
 
     vec3 result = (ambient + diffuse + specular) * baseColor + rimContrib;
     result += emissiveColor * emissiveStrength;
@@ -115,27 +120,19 @@ void main() {
     float heightFactor = clamp(FragPos.y / 20000.0, 0.0, 1.0);
     fogFactor = mix(fogFactor, 1.0, heightFactor * 0.2);
 
-    // Céu físico
-    vec3  viewRayN    = normalize(FragPos - viewPos);
-    float upDot       = dot(viewRayN, vec3(0.0, 1.0, 0.0));
-    vec3  zenithColor  = vec3(0.02, 0.12, 0.82);
-    vec3  horizonColor = vec3(0.38, 0.65, 0.98);
-    vec3  skyGradient  = mix(horizonColor, zenithColor, clamp(upDot * 3.0, 0.0, 1.0));
+    // Fog color combina com o skybox
+    vec3  viewRayN = normalize(FragPos - viewPos);
+    float upDot    = dot(viewRayN, vec3(0.0, 1.0, 0.0));
+    float sunDot   = max(dot(viewRayN, normalize(sunDir)), 0.0);
 
-    float horizonGlow = pow(1.0 - abs(upDot), 5.0) * max(dot(viewRayN, sunDir), 0.0);
-    vec3  sunsetColor = vec3(1.0, 0.5, 0.15) * horizonGlow * 0.6;
-    float mieStrong   = pow(max(dot(viewRayN, sunDir), 0.0), 80.0) * 1.5;
-    vec3  sunGlow     = vec3(1.0, 0.95, 0.7) * mieStrong;
-    vec3  finalSky    = skyGradient + sunsetColor + sunGlow;
+    vec3 fogWarm = vec3(1.0, 0.82, 0.58);
+    vec3 fogCool = vec3(0.72, 0.85, 0.98);
+    vec3 fogColor = mix(fogCool, fogWarm, sunDot * sunDot * 1.5);
+    fogColor      = mix(fogColor, vec3(0.60, 0.78, 0.96), 0.4);
 
-    // Atmospheric haze no horizonte
-    float hazeAmount = pow(1.0 - abs(upDot), 8.0);
-    vec3  hazeColor  = mix(horizonColor, vec3(0.85, 0.92, 1.0), 0.4);
-    finalSky         = mix(finalSky, hazeColor, hazeAmount * 0.7);
-
-    // Haze em objetos distantes
     float distHaze = 1.0 - exp(-dist * fogDensity * 3.0);
-    result         = mix(result, hazeColor * 0.8, distHaze * hazeAmount * 0.3);
+    float hazeAmt  = pow(clamp(1.0 - abs(upDot), 0.0, 1.0), 7.0);
+    result = mix(result, fogColor * 0.88, distHaze * hazeAmt * 0.3);
 
-    FragColor = vec4(mix(finalSky, result, fogFactor), 1.0);
+    FragColor = vec4(mix(fogColor, result, fogFactor), 1.0);
 }
