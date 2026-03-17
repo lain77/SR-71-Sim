@@ -3,13 +3,16 @@ package fbw.system;
 import org.joml.Matrix4f;
 import org.joml.Vector3f;
 import org.lwjgl.system.MemoryUtil;
+
 import java.nio.FloatBuffer;
+
 import static org.lwjgl.opengl.GL11.*;
 import static org.lwjgl.opengl.GL15.*;
 import static org.lwjgl.opengl.GL20.*;
 import static org.lwjgl.opengl.GL30.*;
 
 public class SkyRenderer {
+
     private final int vaoId;
     private final int vboId;
     private final ShaderProgram shader;
@@ -23,7 +26,6 @@ public class SkyRenderer {
             throw new RuntimeException("Erro ao carregar sky shader", e);
         }
 
-        // Quad fullscreen
         float[] verts = { -1,-1, 1,-1, 1,1, -1,-1, 1,1, -1,1 };
         vaoId = glGenVertexArrays();
         glBindVertexArray(vaoId);
@@ -38,31 +40,29 @@ public class SkyRenderer {
         glBindVertexArray(0);
     }
 
-    public void render(Camera camera, Vector3f sunDir) {
+    public void render(Camera camera, Vector3f sunDir, float altitude) {
         glDisable(GL_DEPTH_TEST);
         glDepthMask(false);
 
-        // Matriz inversa para reconstruir view rays
         Matrix4f invProj = camera.getProjectionMatrix().invert(new Matrix4f());
         Matrix4f invView = camera.getViewMatrix().invert(new Matrix4f());
-        // Zera a translação da view para girar o céu com a câmera mas não mover
         invView.m30(0); invView.m31(0); invView.m32(0);
 
         shader.bind();
         shader.setUniformMatrix4f("invProj", invProj);
         shader.setUniformMatrix4f("invView", invView);
-        shader.setUniform3f("sunDir",
-            sunDir.x, sunDir.y, sunDir.z);
+        shader.setUniform3f("sunDir", sunDir.x, sunDir.y, sunDir.z);
         shader.setUniform3f("camPos",
             camera.getPosition().x,
             camera.getPosition().y,
             camera.getPosition().z);
+        shader.setUniformFloat("altitude", altitude);
 
         glBindVertexArray(vaoId);
         glDrawArrays(GL_TRIANGLES, 0, 6);
         glBindVertexArray(0);
-        shader.unbind();
 
+        shader.unbind();
         glDepthMask(true);
         glEnable(GL_DEPTH_TEST);
     }

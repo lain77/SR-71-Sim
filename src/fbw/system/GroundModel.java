@@ -156,12 +156,12 @@ public class GroundModel {
 
     // ── GERADOR PRINCIPAL ─────────────────────────────────────────────
     public static float generateHeight(float x, float z) {
-        float nx = x * 0.000045f;
-        float nz = z * 0.000045f;
+        float nx = x * 0.000015f;  // era 0.000045 — terreno maior
+        float nz = z * 0.000015f;
 
         float regionMask = fbm(nx * 0.25f, nz * 0.25f, 3, 1.0f, 2.0f, 0.5f);
 
-        float ridgeAngle = (x * 0.6f + z * 1.0f) * 0.000025f;
+        float ridgeAngle = (x * 0.6f + z * 1.0f) * 0.000008f;  // era 0.000025
         float ridgeMask  = (float) Math.exp(-ridgeAngle * ridgeAngle * 0.5f);
         float ridge      = ridgeFbm(nx, nz, 6, 1.0f, 2.1f, 0.5f);
 
@@ -169,34 +169,36 @@ public class GroundModel {
         float detail = fbm(nx * 8f, nz * 8f, 3, 1.0f, 2.0f, 0.45f) * 0.08f;
 
         float mountainBlend = smoothstep(0.35f, 0.65f, regionMask);
-        float plainHeight   = (plains - 0.4f) * 600f;
+        float plainHeight   = (plains - 0.4f) * 800f;
 
-        // 3x mais alto que antes
-        float mountainHeight = ridge * (8400f + regionMask * 3600f);
+        // Pico ~18,000 unidades = 18,000 ft (Monte Elbrus real)
+        float mountainHeight = ridge * (15000f + regionMask * 4000f);
         mountainHeight *= (0.4f + ridgeMask * 0.6f);
 
         float combined = mix(plainHeight, mountainHeight, mountainBlend);
-        combined += detail * 200f;
+        combined += detail * 400f;
 
-        // Rios: vales estreitos onde o fBm tem valor baixo específico
+        // Rios
         float riverNoise = fbm(nx * 2f, nz * 2f, 2, 1.0f, 2.0f, 0.5f);
         float riverMask  = smoothstep(0.48f, 0.50f, riverNoise)
-                         * smoothstep(0.52f, 0.50f, riverNoise); // faixa estreita
-        riverMask *= (1f - mountainBlend); // só em planícies
-        combined  -= riverMask * 400f; // escava o vale do rio
+                         * smoothstep(0.52f, 0.50f, riverNoise);
+        riverMask *= (1f - mountainBlend);
+        combined  -= riverMask * 500f;
 
-        // Lagos: depressões em áreas planas com mask baixo
+        // Lagos
         float lakeMask = smoothstep(0.30f, 0.25f, regionMask)
                        * smoothstep(0.3f, 0.0f, fbm(nx * 3f, nz * 3f, 2, 1.0f, 2.0f, 0.5f));
-        combined -= lakeMask * 200f;
+        combined -= lakeMask * 300f;
 
+        // Borda do mapa desce pro nível do mar
         float edgeDist = edgeDistance(x, z, 200000f);
         if (edgeDist < 1.0f) {
-            combined = mix(-80f, combined, edgeDist * edgeDist);
+            combined = mix(-100f, combined, edgeDist * edgeDist);
         }
 
-        if (combined < -60f) {
-            combined = -60f + (combined + 60f) * 0.15f;
+        // Fundo do mar
+        if (combined < -20f) {
+            combined = -20f + (combined + 20f) * 0.1f;
         }
 
         return combined;

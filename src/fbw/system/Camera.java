@@ -14,8 +14,8 @@ public class Camera {
     private float baseFov = 60f;
     private float currentFov = 60f;
     
-    private float near = 1f;
-    private float far = 150000f; 
+    private float near = 10f;
+    private float far = 500000f;
     private float fov = 70f;
     private float aspect = 1280f/720f;
 
@@ -98,6 +98,11 @@ public class Camera {
         this.fov = currentFov;
     }
 
+    public void updateNearFarForAltitude(float altitude) {
+        near = 5f;
+        far = 1000000f;  
+    }
+    
     public void updateAspect(int width, int height) { this.aspect = (float) width / height; }
     
     // Getters e Setters padrão

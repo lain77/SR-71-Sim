@@ -25,11 +25,15 @@ public class CloudSystem {
     private final int vboId;
     private final ShaderProgram shader;
 
-    private static final int   CLOUD_COUNT    = 60;   // número de nuvens
-    private static final int   SPHERES_PER    = 8;    // esferas por nuvem
-    private static final float SPREAD         = 180000f; // área de distribuição
-    private static final float ALT_MIN        = 2000f;
-    private static final float ALT_MAX        = 4000f;
+    private static final int   CLOUD_COUNT    = 120;   // era 80
+    private static final int   SPHERES_PER    = 12;    // era 10
+    private static final float SPREAD         = 300000f; // era 250000
+
+    // Duas camadas de nuvens
+    private static final float CUMULUS_MIN    = 7500f;    // 7,500 ft
+    private static final float CUMULUS_MAX    = 13500f;   // 13,500 ft
+    private static final float CIRRUS_MIN    = 24000f;   // 24,000 ft
+    private static final float CIRRUS_MAX    = 33000f;   // 33,000 ft
 
     public CloudSystem() {
         try {
@@ -41,26 +45,44 @@ public class CloudSystem {
         }
 
         // Gera as nuvens aleatoriamente
-        Random rng = new Random(42); // seed fixo = mesmas nuvens sempre
-        for (int c = 0; c < CLOUD_COUNT; c++) {
-            // Centro do cluster
-            float cx = (rng.nextFloat() - 0.5f) * SPREAD;
-            float cy = ALT_MIN + rng.nextFloat() * (ALT_MAX - ALT_MIN);
-            float cz = (rng.nextFloat() - 0.5f) * SPREAD;
+        Random rng = new Random(42);
 
-            // Escuridão da base (nuvens mais altas ficam mais escuras embaixo)
-            float dark = rng.nextFloat() * 0.5f;
+     // Cumulus — nuvens grossas baixas
+     for (int c = 0; c < CLOUD_COUNT; c++) {
+         float cx = (rng.nextFloat() - 0.5f) * SPREAD;
+         float cy = CUMULUS_MIN + rng.nextFloat() * (CUMULUS_MAX - CUMULUS_MIN);
+         float cz = (rng.nextFloat() - 0.5f) * SPREAD;
+         float dark = 0.15f + rng.nextFloat() * 0.45f;
 
-            for (int s = 0; s < SPHERES_PER; s++) {
-                // Espalha esferas ao redor do centro do cluster
-                float ox = (rng.nextFloat() - 0.5f) * 3000f;
-                float oy = (rng.nextFloat() - 0.5f) * 600f;
-                float oz = (rng.nextFloat() - 0.5f) * 3000f;
-                float sz = 800f + rng.nextFloat() * 1400f; // tamanho variado
+         // Tamanho do cluster varia — algumas nuvens são enormes
+         float clusterScale = 0.6f + rng.nextFloat() * 1.4f;
 
-                spheres.add(new Sphere(new Vector3f(cx + ox, cy + oy, cz + oz), sz, dark));
-            }
-        }
+         for (int s = 0; s < SPHERES_PER; s++) {
+             float ox = (rng.nextFloat() - 0.5f) * 4000f * clusterScale;
+             float oy = (rng.nextFloat() - 0.3f) * 400f;
+             float oz = (rng.nextFloat() - 0.5f) * 4000f * clusterScale;
+             float sz = (500f + rng.nextFloat() * 1500f) * clusterScale;
+
+             // Base das nuvens mais escura
+             float sphereDark = dark + (oy < 0 ? 0.2f : 0f);
+             spheres.add(new Sphere(new Vector3f(cx + ox, cy + oy, cz + oz), sz, sphereDark));
+         }
+     }
+
+     // Cirrus — nuvens finas altas (mais espalhadas)
+     for (int c = 0; c < 40; c++) {
+         float cx = (rng.nextFloat() - 0.5f) * SPREAD * 2f;
+         float cy = CIRRUS_MIN + rng.nextFloat() * (CIRRUS_MAX - CIRRUS_MIN);
+         float cz = (rng.nextFloat() - 0.5f) * SPREAD * 2f;
+
+         for (int s = 0; s < 5; s++) {
+             float ox = (rng.nextFloat() - 0.5f) * 12000f;
+             float oy = (rng.nextFloat() - 0.5f) * 80f;
+             float oz = (rng.nextFloat() - 0.5f) * 12000f;
+             float sz = 2000f + rng.nextFloat() * 4000f;
+             spheres.add(new Sphere(new Vector3f(cx + ox, cy + oy, cz + oz), sz, 0.03f));
+         }
+     }
 
         // Quad billboard (mesmo do sol)
         float[] verts = {
@@ -108,6 +130,7 @@ public class CloudSystem {
         shader.setUniformMatrix4f("projection", camera.getProjectionMatrix());
         shader.setUniformMatrix4f("view", viewMat);
         shader.setUniform3f("camRight", camRight.x, camRight.y, camRight.z);
+        shader.setUniformFloat("camAltitude", camPos.y);
         shader.setUniform3f("camUp",    camUp.x,    camUp.y,    camUp.z);
         shader.setUniform3f("sunDir",   sunDir.x,   sunDir.y,   sunDir.z);
 
@@ -115,7 +138,7 @@ public class CloudSystem {
         for (Sphere s : spheres) {
             // Culling simples: não renderiza nuvens muito longe
             float dist = camPos.distance(s.position());
-            if (dist > 120000f) continue;
+            if (dist > 200000f) continue;
 
             // Fade nas bordas do range de visibilidade
             shader.setUniform3f("center",   s.position().x, s.position().y, s.position().z);

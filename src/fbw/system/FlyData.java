@@ -41,7 +41,13 @@ public class FlyData {
     private ShaderProgram sunShader;
     private CloudSystem cloudSystem;
     private SkyRenderer skyRenderer;
+    private int waterVaoId;
 
+    private boolean borderlessFullscreen = false;
+    
+    private HeightmapTerrain heightmapTerrain;
+    private int satelliteTextureId;
+    
     private float missionBarY       = 110;
     private float missionBarTargetY = 110;
     
@@ -227,9 +233,8 @@ public class FlyData {
         lastFrameTime  = System.currentTimeMillis();
         
         Mundo mundo = new Mundo(10000f, 5000f, 10000f, fbw);
-        mundo.start();
-        Vector3f centro = new Vector3f(mundo.getTamanho()).mul(0.5f);
-        mundo.getAviao().setPosicao(centro);
+
+        fbw.setPosicao(new Vector3f(0, 60000f, 0)); 
 
         logoTextureId = loadTexture("src/img/logoox.jpg");
         
@@ -253,13 +258,22 @@ public class FlyData {
         rockTextureId = loadTexture("src/img/rock.jpg");
         snowTextureId = loadTexture("src/img/snow.jpg");
         
-        ground = new GroundModel(400000f, 120f);
+        heightmapTerrain = new HeightmapTerrain(
+        	    "src/img/terrain_heightmap.png",
+        	    1600000f,    // largura em ft (~490 km)
+        	    800000f,     // profundidade em ft (~245 km)
+        	    18000f,      // altura máxima (Monte Elbrus ~18,000 ft)
+        	    8            // pixels com valor <= 8 = mar
+        	);
+        	satelliteTextureId = loadTexture("src/img/terrain_satellite.png");
+        waterVaoId = createWaterPlane();
         
         init3DSystem();
     }
 
     private void startGameplay() {
-        if (gameplayStarted) return; // evita iniciar duas vezes
+        if (gameplayStarted) return;
+        System.out.println("START POS: " + fbw.getPosicao());
         fbw.start();
         enemy.start();
         gameplayStarted = true;
@@ -270,7 +284,7 @@ public class FlyData {
         enemy.stop();
         fbw.stop();
         fbw.revive();
-        fbw.setPosicao(new Vector3f(5000f, 6667f, 5000f));
+        fbw.setPosicao(new Vector3f(0, 60000f, 0));
         fbw.setThrottle(300); 
         gameplayStarted = false;
         previousScreen = Screen.MAIN_MENU;
@@ -314,19 +328,19 @@ public class FlyData {
             scene = Assimp.aiImportFile("src/models/sr71/sr71white.glb",
                     Assimp.aiProcess_Triangulate | Assimp.aiProcess_FlipUVs | Assimp.aiProcess_GenNormals);
 
-            terrainScene = Assimp.aiImportFile(
-            	    "src/models/assets/snowy_mountain_-_terrain.glb",
-            	    Assimp.aiProcess_Triangulate |
-            	    Assimp.aiProcess_FlipUVs     |
-            	    Assimp.aiProcess_GenNormals
-            	);
-
-            	if (terrainScene == null || terrainScene.mRootNode() == null) {
-            	    System.out.println(" Terreno GLB não carregado: " + Assimp.aiGetErrorString());
-            	} else {
-            	    terrainModels.addAll(Model.loadAllFromScene(terrainScene));
-            	    System.out.println(" Terreno carregado: " + terrainModels.size() + " meshes");
-            	}
+//            terrainScene = Assimp.aiImportFile(
+//            	    "src/models/assets/snowy_mountain_-_terrain.glb",
+//            	    Assimp.aiProcess_Triangulate |
+//            	    Assimp.aiProcess_FlipUVs     |
+//            	    Assimp.aiProcess_GenNormals
+//            	);
+//
+//            	if (terrainScene == null || terrainScene.mRootNode() == null) {
+//            	    System.out.println(" Terreno GLB não carregado: " + Assimp.aiGetErrorString());
+//            	} else {
+//            	    terrainModels.addAll(Model.loadAllFromScene(terrainScene));
+//            	    System.out.println(" Terreno carregado: " + terrainModels.size() + " meshes");
+//            	}
             
             if (scene == null || scene.mRootNode() == null) {
                 throw new RuntimeException("Erro ao carregar modelo: " + Assimp.aiGetErrorString());
@@ -487,11 +501,16 @@ public class FlyData {
                     if (pressed) {
                         long monitor = glfwGetPrimaryMonitor();
                         GLFWVidMode mode = glfwGetVideoMode(monitor);
-                        if (glfwGetWindowMonitor(window) == NULL) {
-                            glfwSetWindowMonitor(window, monitor, 0, 0, 
-                                mode.width(), mode.height(), mode.refreshRate());
+                        if (!borderlessFullscreen) {
+                            glfwSetWindowAttrib(window, GLFW_DECORATED, GLFW_FALSE);
+                            glfwSetWindowPos(window, 0, 0);
+                            glfwSetWindowSize(window, mode.width(), mode.height());
+                            borderlessFullscreen = true;
                         } else {
-                            glfwSetWindowMonitor(window, NULL, 100, 100, 1280, 720, 0);
+                            glfwSetWindowAttrib(window, GLFW_DECORATED, GLFW_TRUE);
+                            glfwSetWindowPos(window, 100, 100);
+                            glfwSetWindowSize(window, 1280, 720);
+                            borderlessFullscreen = false;
                         }
                         int[] w = new int[1], h = new int[1];
                         glfwGetFramebufferSize(window, w, h);
@@ -499,8 +518,6 @@ public class FlyData {
                         screenHeight = h[0];
                         glViewport(0, 0, screenWidth, screenHeight);
                         camera.updateAspect(screenWidth, screenHeight);
-
-                        // Atualiza escala da fonte
                         textRenderer.setScale(screenWidth / 1280f);
 
                         if (sceneBuffer  != null) sceneBuffer.cleanup();
@@ -1802,9 +1819,15 @@ public class FlyData {
         FlyByWire.FlightData data = fbw.getLastData();
         glClearColor(0f, 0f, 0f, 1f);
 
-        // ── SKY PRIMEIRO ─────────────────────────────────────────────
+        if (data != null) {
+            camera.updateNearFarForAltitude((float)data.altitude);
+        }
+        
         Vector3f sunDir = new Vector3f(0.8f, 0.4f, 0.3f).normalize();
-        skyRenderer.render(camera, sunDir);
+        FlyByWire.FlightData skyData = fbw.getLastData();
+        float alt = (skyData != null) ? (float)skyData.altitude : 0f;
+        skyRenderer.render(camera, sunDir, alt);
+        renderStars(alt);
 
         glEnable(GL_DEPTH_TEST);
 
@@ -1819,61 +1842,33 @@ public class FlyData {
         shader.bind();
         shader.setUniformMatrix4f("projection", camera.getProjectionMatrix());
         shader.setUniformMatrix4f("view",       camera.getViewMatrix());
-        shader.setUniform3f("viewPos",    camera.getPosition().x, camera.getPosition().y, camera.getPosition().z);
+        shader.setUniform3f("viewPos", camera.getPosition().x,
+                camera.getPosition().y,
+                camera.getPosition().z);
         shader.setUniform3f("lightDir",   -lx, -ly, -lz);
         shader.setUniform3f("lightColor",  2.0f, 1.8f, 1.4f);
         shader.setUniform3f("skyColor",    0.15f, 0.45f, 0.85f);
         shader.setUniform3f("rimColor",    0.8f, 0.85f, 1.0f);
         shader.setUniformFloat("rimStrength", 2.0f);
-        shader.setUniformFloat("fogDensity",  0.000000000012f);
+        shader.setUniformFloat("fogDensity", 0.0000015f);
         shader.setUniform3f("emissiveColor",       0f, 0f, 0f);
         shader.setUniformFloat("emissiveStrength", 0f);
         shader.setUniform3f("sunDir", sunDir.x, sunDir.y, sunDir.z);
 
-        // ── TERRENO ───────────────────────────────────────────────────
-        if (!terrainModels.isEmpty()) {
-            shader.setUniform1i("useTerrain", 0);
-            shader.setUniform1i("useTexture", 1);
-            shader.setUniform1i("texture1",   0);
-
-            Matrix4f terrainMatrix = new Matrix4f()
-            	    .translate(0f, -18000f, 0f)
-            	    .rotateX((float) Math.toRadians(180))
-            	    .scale(500000f);
-            shader.setUniformMatrix4f("model", terrainMatrix);
-
-            for (Model m : terrainModels) {
-                if (m.getTextureId() > 0) {
-                    glActiveTexture(GL_TEXTURE0);
-                    glBindTexture(GL_TEXTURE_2D, m.getTextureId());
-                }
-                m.render();
-            }
-            glBindTexture(GL_TEXTURE_2D, 0);
-            glActiveTexture(GL_TEXTURE0);
-        } //else {
-//            // Fallback: terreno procedural original
-//            shader.setUniform1i("useTexture", 1);
-//            shader.setUniform1i("useTerrain", 1);
-//            shader.setUniform1i("texture1",   0);
-//            shader.setUniform1i("texRock",    1);
-//            shader.setUniform1i("texSnow",    2);
-//
-//            glActiveTexture(GL_TEXTURE0);
-//            glBindTexture(GL_TEXTURE_2D, groundTextureId);
-//            glActiveTexture(GL_TEXTURE1);
-//            glBindTexture(GL_TEXTURE_2D, rockTextureId);
-//            glActiveTexture(GL_TEXTURE2);
-//            glBindTexture(GL_TEXTURE_2D, snowTextureId);
-//
-//            shader.setUniformMatrix4f("model", new Matrix4f());
-//            ground.render();
-//
-//            glBindTexture(GL_TEXTURE_2D, 0);
-//            glActiveTexture(GL_TEXTURE0);
-//        }
-
+     // ── TERRENO HEIGHTMAP ──────────────────────────────────
+        shader.setUniform1i("useTexture", 1);
         shader.setUniform1i("useTerrain", 0);
+        shader.setUniform1i("useSatellite", 1);
+        shader.setUniform1i("texture1", 0);
+
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, satelliteTextureId);
+
+        shader.setUniformMatrix4f("model", new Matrix4f());
+        heightmapTerrain.render();
+
+        glBindTexture(GL_TEXTURE_2D, 0);
+        shader.setUniform1i("useSatellite", 0);
 
      // ── SR-71 ─────────────────────────────────────────────────────
         shader.setUniform1i("useTexture", 1);
@@ -2528,6 +2523,9 @@ public class FlyData {
         if (treeSystem != null) treeSystem.cleanup();
         if (skyRenderer != null) skyRenderer.cleanup();
         if (terrainScene != null) Assimp.aiReleaseImport(terrainScene);
+        if (heightmapTerrain != null) heightmapTerrain.cleanup();
+        audio.stopMusic();
+        audio.stopSound();
         for (Model m : terrainModels) m.cleanup();
         glfwDestroyWindow(window);
         glfwTerminate();
@@ -2625,25 +2623,27 @@ public class FlyData {
     }
     
     private void selectAndStart(int index) {
+        audio.stopMusic();  // para música do menu
         missionManager.selectMission(index);
         Mission m = missionManager.currentMission();
         stats.begin(m != null ? m.getName() : "Voo Livre");
         startGameplay();
-        transitionTo(Screen.EXTERNAL);    
-        }
+        transitionTo(Screen.EXTERNAL);
+    }
     
     private void checkTerrainCollision() {
         if (fbw.isDead()) return;
         FlyByWire.FlightData data = fbw.getLastData();
         if (data == null) return;
 
-        Vector3f pos        = fbw.getPosicao();
-        float    groundY    = GroundModel.generateHeight(pos.x, pos.z);
-        float planeY = pos.y;
+        Vector3f pos = fbw.getPosicao();
+        float groundY = heightmapTerrain.getHeightAt(pos.x, pos.z);
 
-        if (planeY <= groundY + 5f) { // 5 unidades de margem
+        if (pos.y <= groundY + 5f) {
+            System.out.println("COLLISION! Plane Y=" + pos.y + 
+                " Ground Y=" + groundY + 
+                " Pos X=" + pos.x + " Z=" + pos.z);
             fbw.kill();
-            System.out.println("Colisão com terreno!");
         }
     }
     
@@ -2838,6 +2838,10 @@ public class FlyData {
     }
     
     private void renderMainMenu() {
+        if (!audio.isMusicPlaying()) {
+            audio.playMusic("/audio/thebeast.wav");
+        }
+    	
         setup2DLegado();
         glClearColor(0f, 0f, 0f, 1f);
 
@@ -3419,13 +3423,15 @@ public class FlyData {
     private void confirmMenuSelection() {
         switch (menuSelectedIndex) {
 	        case 0 -> {
+	            audio.stopMusic();  // para música do menu
 	            stats.begin("Voo Livre");
 	            startGameplay();
 	            transitionTo(Screen.EXTERNAL);
 	        }
-            case 1 -> { // MISSOES
-                transitionTo(Screen.MISSION_SELECT);
-            }
+	        case 1 -> {
+	            // música continua na tela de missões
+	            transitionTo(Screen.MISSION_SELECT);
+	        }
             case 2 -> { // OPCOES
                 // por enquanto não faz nada — placeholder
             }
@@ -3974,6 +3980,113 @@ public class FlyData {
         glLineWidth(1f);
         glDepthMask(true);
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    }
+    
+    private void renderStars(float altitude) {
+        if (altitude < 35000) return;
+
+        float starAlpha = (altitude - 35000f) / 50000f;
+        starAlpha = Math.min(1f, starAlpha);
+
+        Vector3f camPos = camera.getPosition();
+
+        glDisable(GL_DEPTH_TEST);
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE);  // additive — estrelas brilham
+
+        glUseProgram(0);
+        glBindVertexArray(0);
+
+        // Usa matrizes da câmera
+        FloatBuffer fbProj = BufferUtils.createFloatBuffer(16);
+        camera.getProjectionMatrix().get(fbProj);
+        glMatrixMode(GL_PROJECTION);
+        glLoadIdentity();
+        glLoadMatrixf(fbProj);
+
+        FloatBuffer fbView = BufferUtils.createFloatBuffer(16);
+        camera.getViewMatrix().get(fbView);
+        glMatrixMode(GL_MODELVIEW);
+        glLoadIdentity();
+        glLoadMatrixf(fbView);
+
+        glPointSize(1.5f);
+        glBegin(GL_POINTS);
+        for (int i = 0; i < 300; i++) {
+            // Posições fixas no "dome" celeste (determinístico)
+            double theta = Math.sin(i * 127.1 + 0.5) * Math.PI;
+            double phi   = Math.cos(i * 311.7 + 0.3) * Math.PI * 2;
+            float dist   = 80000f;
+
+            float sx = camPos.x + (float)(Math.sin(theta) * Math.cos(phi)) * dist;
+            float sy = (float)(Math.abs(Math.cos(theta))) * dist + 5000f;  // só acima do horizonte
+            float sz = camPos.z + (float)(Math.sin(theta) * Math.sin(phi)) * dist;
+
+            // Cintilação
+            float twinkle = 0.5f + (float)(Math.sin(crtTime * (1.5 + (i % 7) * 0.3) + i * 0.8) * 0.5);
+
+            // Variação de brilho por estrela
+            float brightness = 0.4f + (float)(Math.sin(i * 73.1) * 0.5 + 0.5) * 0.6f;
+
+            // Algumas estrelas maiores
+            if (i % 30 == 0) {
+                glEnd();
+                glPointSize(2.5f);
+                glBegin(GL_POINTS);
+            } else if (i % 30 == 1) {
+                glEnd();
+                glPointSize(1.5f);
+                glBegin(GL_POINTS);
+            }
+
+            // Cor: maioria branca, algumas azuladas, algumas amareladas
+            float r, g, b;
+            if (i % 13 == 0) {
+                r = 0.7f; g = 0.8f; b = 1.0f;     // azulada
+            } else if (i % 17 == 0) {
+                r = 1.0f; g = 0.9f; b = 0.7f;     // amarelada
+            } else {
+                r = 0.95f; g = 0.95f; b = 1.0f;   // branca
+            }
+
+            glColor4f(r, g, b, starAlpha * twinkle * brightness);
+            glVertex3f(sx, sy, sz);
+        }
+        glEnd();
+        glPointSize(1f);
+
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        glEnable(GL_DEPTH_TEST);
+    }
+    
+    private int createWaterPlane() {
+        float[] verts = {
+            -0.5f, 0, -0.5f,  0,1,0,  0,0,
+             0.5f, 0, -0.5f,  0,1,0,  1,0,
+             0.5f, 0,  0.5f,  0,1,0,  1,1,
+            -0.5f, 0, -0.5f,  0,1,0,  0,0,
+             0.5f, 0,  0.5f,  0,1,0,  1,1,
+            -0.5f, 0,  0.5f,  0,1,0,  0,1
+        };
+        int vao = glGenVertexArrays();
+        glBindVertexArray(vao);
+        
+        int vbo = glGenBuffers();
+        FloatBuffer buf = BufferUtils.createFloatBuffer(verts.length);
+        buf.put(verts).flip();
+        glBindBuffer(GL_ARRAY_BUFFER, vbo);
+        glBufferData(GL_ARRAY_BUFFER, buf, GL_STATIC_DRAW);
+        
+        int stride = 8 * 4; // 3 pos + 3 norm + 2 uv = 8 floats * 4 bytes
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 3, GL_FLOAT, false, stride, 0);
+        glEnableVertexAttribArray(1);
+        glVertexAttribPointer(1, 3, GL_FLOAT, false, stride, 3 * 4);
+        glEnableVertexAttribArray(2);
+        glVertexAttribPointer(2, 2, GL_FLOAT, false, stride, 6 * 4);
+        
+        glBindVertexArray(0);
+        return vao;
     }
     
     public static void main(String[] args) { new FlyData().run(); }

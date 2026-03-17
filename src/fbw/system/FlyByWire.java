@@ -38,7 +38,7 @@ public class FlyByWire {
     private static final double FUEL_BURN_BASE = 50.0; // L/s no idle
 
     // Escala: 1 unidade de mundo = ALT_SCALE pés de altitude
-    private static final double ALT_SCALE = 3.0;
+    private static final double ALT_SCALE = 1.0; 
 
     // Histórico de velocidade para o gráfico (últimos 60 samples)
     private final double[] speedHistory = new double[60];
@@ -49,10 +49,10 @@ public class FlyByWire {
     private int     hp       = 1; // 1 hit = morte instantânea
     
     public FlyByWire() {
-        state   = new FlightData(20000, 200, 0, 0, 0, 0); 
-        posicao = new Vector3f(0, (float)(20000 / ALT_SCALE), 0);
+        state   = new FlightData(20000, 200, 0, 0, 0, 0);
+        posicao = new Vector3f(0, 60000f, 0);
         direcao = new Vector3f(0, 0, -1);
-        throttle = 300; 
+        throttle = 300;
     }
 
     public void start() {
