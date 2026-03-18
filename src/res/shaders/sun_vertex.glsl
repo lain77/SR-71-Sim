@@ -1,6 +1,6 @@
 #version 330 core
 
-layout(location = 0) in vec2 aPos; // quad -1..1
+layout(location = 0) in vec2 aPos;
 
 uniform vec3  center;
 uniform vec3  camRight;

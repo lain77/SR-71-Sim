@@ -26,6 +26,7 @@ import static org.lwjgl.stb.STBImage.*;
 import static org.lwjgl.system.MemoryUtil.*;
 
 import fbw.assets.Audio;
+import fbw.assets.EngineAudio;
 import fbw.assets.FileUtils;
 import fbw.assets.Text;
 import fbw.gameplay.FlightStats;
@@ -160,6 +161,7 @@ public class FlyData {
     private boolean     introSkipped = false;
     private float       deathTimer   = 0f;
     private float lastDelta = 0.016f;
+    private EngineAudio engineAudio;
     
     // Ângulo da câmera cinemática da intro
     private float introCamAngle = 0f;
@@ -276,6 +278,8 @@ public class FlyData {
         System.out.println("START POS: " + fbw.getPosicao());
         fbw.start();
         enemy.start();
+        audio.stopMusic();
+        engineAudio.start(); 
         gameplayStarted = true;
     }
 
@@ -286,6 +290,7 @@ public class FlyData {
         fbw.revive();
         fbw.setPosicao(new Vector3f(0, 60000f, 0));
         fbw.setThrottle(300); 
+        engineAudio.stop();
         gameplayStarted = false;
         previousScreen = Screen.MAIN_MENU;
     }
@@ -324,6 +329,8 @@ public class FlyData {
 
             camera = new Camera();
             camera.updateAspect(1280, 720);
+            engineAudio = new EngineAudio();
+            engineAudio.init("src/audio/engine.wav");
 
             scene = Assimp.aiImportFile("src/models/sr71/sr71white.glb",
                     Assimp.aiProcess_Triangulate | Assimp.aiProcess_FlipUVs | Assimp.aiProcess_GenNormals);
@@ -637,6 +644,22 @@ public class FlyData {
                 missionManager.update(delta, fbw, enemy);
                 
                 weather.update(delta, fbw);
+                
+                FlyByWire.FlightData ed = fbw.getLastData();
+                if (ed != null) {
+                    double fuelPct = (fbw.getFuel() / 100000.0) * 100.0;
+                    engineAudio.update(fbw.getThrottle(), ed.mach, ed.altitude, fuelPct);
+                }
+
+                // Mostra RSO quando EngineAudio trigga voice line
+                if (engineAudio.pendingRSOMessage != null) {
+                    triggerRSO(engineAudio.pendingRSOMessage);
+                    engineAudio.pendingRSOMessage = null;
+                }
+                
+                if (enemy.isMissileWarning()) {
+                    engineAudio.playSAMWarning(); 
+                }
                 
                 // Checa missão completa
                 Mission current = missionManager.currentMission();
@@ -1846,11 +1869,11 @@ public class FlyData {
                 camera.getPosition().y,
                 camera.getPosition().z);
         shader.setUniform3f("lightDir",   -lx, -ly, -lz);
-        shader.setUniform3f("lightColor",  2.0f, 1.8f, 1.4f);
+        shader.setUniform3f("lightColor", 1.4f, 1.3f, 1.1f); 
         shader.setUniform3f("skyColor",    0.15f, 0.45f, 0.85f);
         shader.setUniform3f("rimColor",    0.8f, 0.85f, 1.0f);
         shader.setUniformFloat("rimStrength", 2.0f);
-        shader.setUniformFloat("fogDensity", 0.0000015f);
+        shader.setUniformFloat("fogDensity", 0.0000002f);
         shader.setUniform3f("emissiveColor",       0f, 0f, 0f);
         shader.setUniformFloat("emissiveStrength", 0f);
         shader.setUniform3f("sunDir", sunDir.x, sunDir.y, sunDir.z);
@@ -2524,6 +2547,7 @@ public class FlyData {
         if (skyRenderer != null) skyRenderer.cleanup();
         if (terrainScene != null) Assimp.aiReleaseImport(terrainScene);
         if (heightmapTerrain != null) heightmapTerrain.cleanup();
+        if (engineAudio != null) engineAudio.cleanup();
         audio.stopMusic();
         audio.stopSound();
         for (Model m : terrainModels) m.cleanup();
@@ -2583,40 +2607,49 @@ public class FlyData {
     }
     
     private void renderSun() {
-        // Direção do sol (mesma do lightDir, invertida)
-        org.joml.Vector3f lightDirVec = new org.joml.Vector3f(-0.5f, -1.0f, -0.3f).normalize();
         org.joml.Vector3f sunDirection = new org.joml.Vector3f(0.8f, 0.4f, 0.3f).normalize();
+        
+        // A alta altitude, o sky shader já cuida do sol
+        float camAlt = camera.getPosition().y;
+        if (camAlt > 50000) {
+            // Só passa sunDir, não renderiza billboard
+            shader.bind();
+            shader.setUniform3f("sunDir", sunDirection.x, sunDirection.y, sunDirection.z);
+            shader.unbind();
+            return;
+        }
+
+        // Abaixo de 50k — renderiza billboard com glow atmosférico
         org.joml.Vector3f camPos = camera.getPosition();
         org.joml.Vector3f sunPos = new org.joml.Vector3f(camPos).add(
-            new org.joml.Vector3f(sunDirection).mul(90000f)
+            new org.joml.Vector3f(sunDirection).mul(900000f)
         );
 
-        // Vetores right e up da câmera para o billboard
         org.joml.Matrix4f viewMat = camera.getViewMatrix();
         org.joml.Vector3f camRight = new org.joml.Vector3f(viewMat.m00(), viewMat.m10(), viewMat.m20());
         org.joml.Vector3f camUp    = new org.joml.Vector3f(viewMat.m01(), viewMat.m11(), viewMat.m21());
 
         glDisable(GL_DEPTH_TEST);
         glEnable(GL_BLEND);
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE); // additive blend — deixa o sol "explodir" de luz
-        glDepthMask(false);                // não escreve no depth buffer
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE);
+        glDepthMask(false);
 
         sunShader.bind();
         sunShader.setUniformMatrix4f("projection", camera.getProjectionMatrix());
         sunShader.setUniformMatrix4f("view", viewMat);
-        sunShader.setUniform3f("center",   sunPos.x,   sunPos.y,   sunPos.z);
+        sunShader.setUniform3f("center", sunPos.x, sunPos.y, sunPos.z);
         sunShader.setUniform3f("camRight", camRight.x, camRight.y, camRight.z);
-        sunShader.setUniform3f("camUp",    camUp.x,    camUp.y,    camUp.z);
-        sunShader.setUniformFloat("size",  8000f); // tamanho do disco
+        sunShader.setUniform3f("camUp", camUp.x, camUp.y, camUp.z);
+        sunShader.setUniformFloat("size", 600f);
+        sunShader.setUniformFloat("altitude", camAlt);
 
         sunBillboard.render();
         sunShader.unbind();
 
         glDepthMask(true);
         glEnable(GL_DEPTH_TEST);
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); // volta ao blend normal
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
-        // Passa sunDir para o shader principal (scattering atmosférico)
         shader.bind();
         shader.setUniform3f("sunDir", sunDirection.x, sunDirection.y, sunDirection.z);
         shader.unbind();
@@ -2838,9 +2871,9 @@ public class FlyData {
     }
     
     private void renderMainMenu() {
-        if (!audio.isMusicPlaying()) {
-            audio.playMusic("/audio/thebeast.wav");
-        }
+    	if (!audio.isMusicPlaying() && !transitioning) {
+    	    audio.playMusic("/audio/thebeast.wav");
+    	}
     	
         setup2DLegado();
         glClearColor(0f, 0f, 0f, 1f);
@@ -3523,51 +3556,27 @@ public class FlyData {
     private void renderWithPostProcess(float delta) {
         postTime += delta;
 
-        // ── PASSO 1: Renderiza cena no FBO ──────────────────────────
+        // ── PASSO 1: Renderiza cena ─────────────────────────────
         sceneBuffer.bind();
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-        renderExternalScene(); // veja abaixo
+        renderExternalScene();
         sceneBuffer.unbind();
 
-        // ── PASSO 2: Heat haze (distorção nas turbinas) ───────────────
-        blurBufferH.bind();
-        glClear(GL_COLOR_BUFFER_BIT);
-        glDisable(GL_DEPTH_TEST);
-
-        // Projeta posição das turbinas para UV de tela
-        FlyByWire.FlightData data = fbw.getLastData();
-        Vector3f posReal  = fbw.getPosicao();
-        Vector3f planePos = new Vector3f(posReal);
-
-        // Offset aproximado das turbinas (atrás e abaixo do avião)
-        Vector3f turbineWorld = new Vector3f(planePos).add(0, -0.5f, 1.5f);
-        Vector3f screenUV     = worldToScreenUV(turbineWorld);
-
-        heatHazeShader.bind();
-        heatHazeShader.setUniform1i("scene", 0);
-        heatHazeShader.setUniformFloat("time", postTime);
-        heatHazeShader.setUniform2f("turbineScreenPos", screenUV.x, screenUV.y);
-        heatHazeShader.setUniformFloat("hazeStrength", 0.003f);
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, sceneBuffer.getTexture());
-        postQuad.render();
-        heatHazeShader.unbind();
-        blurBufferH.unbind();
-
-        // ── PASSO 3: Extrai brilho ───────────────────────────────────
+        // ── PASSO 2: Extrai APENAS pixels muito brilhantes ──────
         brightBuffer.bind();
         glClear(GL_COLOR_BUFFER_BIT);
+        glDisable(GL_DEPTH_TEST);
         bloomBrightShader.bind();
         bloomBrightShader.setUniform1i("scene", 0);
-        bloomBrightShader.setUniformFloat("threshold", 0.88f);
+        bloomBrightShader.setUniformFloat("threshold", 0.99f);  // quase só o sol
         glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, blurBufferH.getTexture());
+        glBindTexture(GL_TEXTURE_2D, sceneBuffer.getTexture());
         postQuad.render();
         bloomBrightShader.unbind();
         brightBuffer.unbind();
 
-        // ── PASSO 4: Blur horizontal ─────────────────────────────────
-        blurBufferV.bind();
+        // ── PASSO 3: Blur horizontal ────────────────────────────
+        blurBufferH.bind();
         glClear(GL_COLOR_BUFFER_BIT);
         bloomBlurShader.bind();
         bloomBlurShader.setUniform1i("image", 0);
@@ -3576,39 +3585,37 @@ public class FlyData {
         glBindTexture(GL_TEXTURE_2D, brightBuffer.getTexture());
         postQuad.render();
         bloomBlurShader.unbind();
-        blurBufferV.unbind();
+        blurBufferH.unbind();
 
-        // ── PASSO 5: Blur vertical ───────────────────────────────────
-        brightBuffer.bind();
+        // ── PASSO 4: Blur vertical ──────────────────────────────
+        blurBufferV.bind();
         glClear(GL_COLOR_BUFFER_BIT);
         bloomBlurShader.bind();
         bloomBlurShader.setUniform1i("image", 0);
         bloomBlurShader.setUniform1i("horizontal", 0);
         glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, blurBufferV.getTexture());
+        glBindTexture(GL_TEXTURE_2D, blurBufferH.getTexture());
         postQuad.render();
         bloomBlurShader.unbind();
-        brightBuffer.unbind();
+        blurBufferV.unbind();
 
-        // ── PASSO 6: Composite final ─────────────────────────────────
+        // ── PASSO 5: Composite ──────────────────────────────────
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         finalPostShader.bind();
-        finalPostShader.setUniform1i("scene",     0);
+        finalPostShader.setUniform1i("scene", 0);
         finalPostShader.setUniform1i("bloomBlur", 1);
-        finalPostShader.setUniformFloat("bloomStrength", 0.04f);
-        finalPostShader.setUniformFloat("exposure", 1.25f); 
-        finalPostShader.setUniformFloat("vignetteStr",   0.25f);
+        finalPostShader.setUniformFloat("bloomStrength", 0.001f);
+        finalPostShader.setUniformFloat("exposure", 1.0f);
+        finalPostShader.setUniformFloat("vignetteStr", 0.10f);
         finalPostShader.setUniformFloat("time", postTime);
         glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, blurBufferH.getTexture()); // cena com haze
+        glBindTexture(GL_TEXTURE_2D, sceneBuffer.getTexture());
         glActiveTexture(GL_TEXTURE1);
-        glBindTexture(GL_TEXTURE_2D, brightBuffer.getTexture()); // bloom
+        glBindTexture(GL_TEXTURE_2D, blurBufferV.getTexture());
         postQuad.render();
         finalPostShader.unbind();
 
-        // ── HUD por cima (sem post-processing) ───────────────────────
-        glEnable(GL_DEPTH_TEST);
-        
+        // ── Cleanup ─────────────────────────────────────────────
         glActiveTexture(GL_TEXTURE1);
         glBindTexture(GL_TEXTURE_2D, 0);
         glActiveTexture(GL_TEXTURE0);
@@ -3713,11 +3720,10 @@ public class FlyData {
                              && data.altitude <= recon.getMaxAlt();
 
             if (onTarget && altOk) {
-                photoTaken      = true;
+                photoTaken = true;
                 photoPopupTimer = 0f;
-                // Notifica a missão que a foto foi tirada
                 recon.capturePhoto();
-                triggerRSO("PHOTO CAPTURED — GOOD PASS!");
+                engineAudio.playGoodPass();
             } else {
                 triggerRSO(onTarget ? "ALTITUDE OUT OF RANGE" : "NOT OVER TARGET");
             }

@@ -134,21 +134,26 @@ public class FlyByWire {
 
         state.yaw += yawRate * dt;
 
-        // ══════════════════════════════════════════════════════════════
-        // 3. VELOCIDADE — throttle, arrasto, e GRAVIDADE
-        // ══════════════════════════════════════════════════════════════
-        // Arrasto quadrático
-        double drag = 0.0005 * state.speed * state.speed;
+     // ══════════════════════════════════════════════════════════════
+     // 3. VELOCIDADE — throttle, arrasto, gravidade, altitude
+     // ══════════════════════════════════════════════════════════════
 
-        // Gravidade afeta velocidade: subir perde energia, descer ganha
-        // Isso faz o avião desacelerar ao subir e acelerar ao mergulhar
-        double gravEffect = GRAVITY * Math.sin(Math.toRadians(state.pitch)) * 2.5;
+     // Efeito de altitude — ar rarefeito reduz thrust e arrasto
+     double altFactor = 1.0;
+     if (state.altitude > 40000) {
+         altFactor = 1.0 - ((state.altitude - 40000) / 45000.0) * 0.7;
+         altFactor = Math.max(0.3, altFactor);
+     }
 
-        state.speed += (throttle - drag - gravEffect) * dt * 0.1;
-        state.speed  = Math.max(0, Math.min(MAX_SPEED, state.speed));
+     double effectiveThrottle = throttle * altFactor;
+     double drag = 0.0005 * state.speed * state.speed * altFactor;
+     double gravEffect = GRAVITY * Math.sin(Math.toRadians(state.pitch)) * 2.5;
 
-        // Mach
-        state.mach = state.speed / 343.0;
+     state.speed += (effectiveThrottle - drag - gravEffect) * dt * 0.1;
+     state.speed  = Math.max(0, Math.min(MAX_SPEED, state.speed));
+
+     // Mach
+     state.mach = state.speed / 343.0;
 
         // ══════════════════════════════════════════════════════════════
         // 4. DIREÇÃO DE VOO — calculada do pitch + yaw

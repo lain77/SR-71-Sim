@@ -131,37 +131,30 @@ void main() {
         result += vec3(1.0, 0.7, 0.2) * sunScatter * baseColor;
     }
 
-    // ── NEBLINA ATMOSFÉRICA ──────────────────────────────────
-    float dist = length(viewPos - FragPos);
-
-    float camAlt = viewPos.y;
-    float altMix = clamp(camAlt / 85000.0, 0.0, 1.0);
-
-    float fogFactor = exp(-pow(dist * fogDensity, 2.0));
-    fogFactor = clamp(fogFactor, 0.0, 1.0);
-
-    vec3 viewRayN = normalize(FragPos - viewPos);
-    float upDot   = dot(viewRayN, vec3(0.0, 1.0, 0.0));
-    float sunDot  = max(dot(viewRayN, normalize(sunDir)), 0.0);
-
-    vec3 fogWarm = vec3(0.85, 0.75, 0.60);
-    vec3 fogCool = vec3(0.55, 0.70, 0.90);
-    vec3 fogColor = mix(fogCool, fogWarm, sunDot * sunDot);
-
-    // ── ATMOSFERA VISTA DE CIMA ──────────────────────────────
-    vec3 atmosScatter = vec3(0.52, 0.65, 0.85);
-    float atmosDist = 1.0 - exp(-dist * 0.000006);
-    atmosDist = clamp(atmosDist, 0.0, 1.0);
-
-    float scatterStrength = pow(altMix, 1.5) * 0.92;
-
-    result = mix(result, atmosScatter, atmosDist * scatterStrength);
-
-    float horizonGlow = pow(clamp(1.0 - abs(upDot), 0.0, 1.0), 2.5);
-    vec3 horizonWhite = vec3(0.75, 0.82, 0.95);
-    result = mix(result, horizonWhite, horizonGlow * scatterStrength * 0.7);
-
-    result = mix(fogColor, result, fogFactor);
-
-    FragColor = vec4(result, 1.0);
+	// ── NEBLINA ATMOSFÉRICA ──────────────────────────────────
+	float dist = length(viewPos - FragPos);
+	float camAlt = viewPos.y;
+	float altMix = clamp(camAlt / 85000.0, 0.0, 1.0);
+	
+	vec3 viewRayN = normalize(FragPos - viewPos);
+	float upDot   = dot(viewRayN, vec3(0.0, 1.0, 0.0));
+	float sunDot  = max(dot(viewRayN, normalize(sunDir)), 0.0);
+	
+	// Fog de distância (suave)
+	float fogFactor = exp(-dist * fogDensity);
+	fogFactor = clamp(fogFactor, 0.0, 1.0);
+	
+	// Cor do fog
+	vec3 fogColor = mix(vec3(0.55, 0.65, 0.85), vec3(0.8, 0.75, 0.65), sunDot * sunDot * 0.5);
+	
+	// Atmosfera vista de cima — sutil, não lava o terreno
+	float atmosDist = 1.0 - exp(-dist * 0.000002);
+	float scatterStrength = pow(altMix, 2.0) * 0.45;
+	vec3 atmosColor = vec3(0.15, 0.30, 0.65);
+	result = mix(result, atmosColor, atmosDist * scatterStrength);
+	
+	// Fog final
+	result = mix(fogColor, result, fogFactor);
+	
+	FragColor = vec4(result, 1.0);
 }
